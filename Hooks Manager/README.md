@@ -8,6 +8,16 @@ Installation consists of copying three files and restarting the instance using y
 
 ## Installing on an existing instance
 
+On Linux, you can use the [one-command installer](../README.md#one-command-installation-on-linux) instead of copying the files manually. With PocketBase stopped, run this **inside the instance's `pb_hooks` directory**:
+
+```bash
+bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/devAlphaSystem/My-PB-Plugins/main/Hooks%20Manager/install.sh | bash'
+```
+
+The command runs this folder's standalone `install.sh` and installs or updates only this plugin's three files. Start PocketBase and reload the dashboard afterward. Requirements and failure handling are documented in the linked installation guide.
+
+For manual installation:
+
 1. Make sure the instance uses the official **PocketBase v0.40.3** executable, with the admin dashboard and JavaScript hooks enabled.
 2. **Stop the instance manually using your usual method.** Copying the plugin files while the native watcher is active may trigger a restart before installation is complete.
 3. Extract the package and **merge** its `pb_hooks` directory into your existing hooks directory. Preserve all existing files. In a default installation, this directory sits alongside the executable and `pb_data`.
