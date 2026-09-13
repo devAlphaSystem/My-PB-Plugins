@@ -101,7 +101,6 @@
         fi
     done
 
-    # Install the dependencies before the entry hook; preserve all unrelated files.
     for relative_path in "${files[@]}"; do
         mv -fT -- "$temp_dir/$archive_root/$relative_path" "$target_dir/$relative_path"
     done

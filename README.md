@@ -22,6 +22,12 @@ Adds a **Hooks** page to browse, create, edit, and delete hook files. Save draft
 bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/devAlphaSystem/My-PB-Plugins/main/Hooks%20Manager/install.sh | bash'
 ```
 
+or
+
+```bash
+bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/devAlphaSystem/My-PB-Plugins/main/install.sh | bash -s -- "$@"' -- --hooks-manager
+```
+
 ## [Cron Manager](Cron%20Manager/README.md)
 
 Extends **Settings > Crons** with tools to create JavaScript jobs, edit schedules, pause or resume jobs, run them manually, and view execution history for managed jobs.
@@ -30,6 +36,12 @@ Extends **Settings > Crons** with tools to create JavaScript jobs, edit schedule
 
 ```bash
 bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/devAlphaSystem/My-PB-Plugins/main/Cron%20Manager/install.sh | bash'
+```
+
+or
+
+```bash
+bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/devAlphaSystem/My-PB-Plugins/main/install.sh | bash -s -- "$@"' -- --cron-manager
 ```
 
 ## [Update Notifier](Update%20Notifier/README.md)
@@ -42,4 +54,30 @@ Checks the latest official PocketBase release and adds an **Update available: v.
 bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/devAlphaSystem/My-PB-Plugins/main/Update%20Notifier/install.sh | bash'
 ```
 
+or
+
+```bash
+bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/devAlphaSystem/My-PB-Plugins/main/install.sh | bash -s -- "$@"' -- --update-notifier
+```
+
 After installation, start PocketBase and reload the admin dashboard with **Ctrl+Shift+R**.
+
+## Install multiple plugins on Linux
+
+Use the root `install.sh` to install or update any combination of plugins in one command. To select all three:
+
+```bash
+bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/devAlphaSystem/My-PB-Plugins/main/install.sh | bash -s -- "$@"' -- --hooks-manager --cron-manager --update-notifier
+```
+
+| Argument            | Plugin          |
+| ------------------- | --------------- |
+| `--hooks-manager`   | Hooks Manager   |
+| `--cron-manager`    | Cron Manager    |
+| `--update-notifier` | Update Notifier |
+
+Keep the `--` after the closing quote: it lets Bash forward all following plugin flags to the installer. Use `--help` instead of plugin flags to display usage without installing.
+
+The script validates every argument before starting, requires at least one plugin, and ignores repeated flags. It runs the existing standalone installers in the order requested, preserving their destination checks and file handling. Keep PocketBase stopped until the entire command finishes.
+
+If a download or installation fails, the command stops with an error and skips the remaining plugins. Completed installations are not rolled back; the failing plugin may also have replaced some files. Keep PocketBase stopped, resolve the error, and rerun the command.

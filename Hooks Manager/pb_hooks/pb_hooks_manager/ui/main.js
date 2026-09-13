@@ -50,6 +50,7 @@ function pageHooks(route) {
     refreshing: false,
     loading: false,
     busy: false,
+    dragging: false,
     listError: "",
     error: "",
     path: draft?.path || "",
@@ -69,6 +70,7 @@ function pageHooks(route) {
     get hasFile() { return data.isNew || !!data.path; },
     get dirty() { return data.isNew || data.content !== data.originalContent; },
     get isBusy() { return data.busy || data.loading || data.waiting; },
+    get canImport() { return data.ready && data.hasFile && !data.isBusy && data.pending !== "delete"; },
     get visibleFiles() { return data.files.filter((file) => !file.hidden); },
     get currentHidden() { return data.files.some((file) => file.path === data.path && file.hidden); },
     get currentDisabled() { return data.disabledFiles.some((file) => file.path === data.path) && !data.files.some((file) => file.path === data.path); },
@@ -83,6 +85,7 @@ function pageHooks(route) {
   let generation = 0;
   let intervalId;
   let operation = null;
+  let dragDepth = 0;
 
   function isCurrent(token) { return alive && token === generation && app.pb.authStore.record?.id === owner; }
 
@@ -371,6 +374,54 @@ function pageHooks(route) {
     });
   }
 
+  function onFileDragOver(event) {
+    if (!event.dataTransfer?.types.includes("Files")) { return; }
+    event.preventDefault();
+    if (event.type === "dragenter") { ++dragDepth; }
+    data.dragging = isCurrent(generation) && data.canImport && !document.querySelector('.modal[data-modal-state="open"]');
+    event.dataTransfer.dropEffect = data.dragging ? "copy" : "none";
+  }
+
+  function resetFileDrag() {
+    dragDepth = 0;
+    data.dragging = false;
+  }
+
+  function onFileDragLeave(event) {
+    if (!event.dataTransfer?.types.includes("Files")) { return; }
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (!dragDepth) { resetFileDrag(); }
+  }
+
+  async function onFileDrop(event) {
+    resetFileDrag();
+    const files = event.dataTransfer?.files;
+    if (!files?.length) { return; }
+    event.preventDefault();
+    if (!isCurrent(generation) || !data.canImport || document.querySelector('.modal[data-modal-state="open"]')) { return; }
+    const token = ++generation;
+    cancelReads();
+    data.loading = true;
+    data.error = "";
+    try {
+      if (files.length !== 1 || !/\.js$/i.test(files[0].name)) { throw new Error("Drop a single .js file."); }
+      const file = files[0];
+      if (file.size > data.maxFileSize) { throw new Error("The file exceeds the " + app.utils.formattedFileSize(data.maxFileSize) + " limit."); }
+      const bytes = await file.arrayBuffer();
+      if (!isCurrent(token)) { return; }
+      let content;
+      try { content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes); } catch (_) { throw new Error("The file must use UTF-8 encoding."); }
+      if (content.includes("\u0000")) { throw new Error("Only UTF-8 text without null characters can be edited."); }
+      if (data.isNew) { data.name = file.name; }
+      data.content = content;
+      rememberDraft();
+    } catch (err) {
+      if (isCurrent(token)) { showError(err); }
+    } finally {
+      if (isCurrent(token)) { data.loading = false; }
+    }
+  }
+
   async function saveFile() {
     if (!alive || data.isBusy || !data.ready || !data.dirty || data.conflict || data.pending === "delete") { return; }
     if (!document.getElementById(uniqueId + "_form").reportValidity()) { return; }
@@ -490,6 +541,7 @@ function pageHooks(route) {
 
   function onVisibilityChange() {
     if (document.hidden) {
+      resetFileDrag();
       cancelReads();
       app.pb.cancelRequest(requestKeys.status);
     } else { refresh(); }
@@ -575,16 +627,31 @@ function pageHooks(route) {
       refresh();
       intervalId = setInterval(() => refresh(), 3000);
       document.addEventListener("visibilitychange", onVisibilityChange);
-      if (!settings) window.addEventListener("keydown", onKeyDown);
+      if (!settings) {
+        window.addEventListener("keydown", onKeyDown);
+        window.addEventListener("dragenter", onFileDragOver, true);
+        window.addEventListener("dragover", onFileDragOver, true);
+        window.addEventListener("dragleave", onFileDragLeave, true);
+        window.addEventListener("dragend", resetFileDrag, true);
+        window.addEventListener("blur", resetFileDrag);
+        window.addEventListener("drop", onFileDrop, true);
+      }
     },
     onunmount: () => {
       rememberDraft();
+      resetFileDrag();
       alive = false;
       ++generation;
       clearInterval(intervalId);
       Object.values(requestKeys).forEach((key) => app.pb.cancelRequest(key));
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("dragenter", onFileDragOver, true);
+      window.removeEventListener("dragover", onFileDragOver, true);
+      window.removeEventListener("dragleave", onFileDragLeave, true);
+      window.removeEventListener("dragend", resetFileDrag, true);
+      window.removeEventListener("blur", resetFileDrag);
+      window.removeEventListener("drop", onFileDrop, true);
     },
   };
 
@@ -938,10 +1005,21 @@ function pageHooks(route) {
               rememberDraft();
             },
           }),
+          t.div(
+            {
+              className: "txt-center",
+              role: "status",
+              hidden: () => !data.dragging || !data.canImport,
+              style: "position: absolute; inset: 0; z-index: 2; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 20px; border: 2px dashed var(--accentColor); border-radius: inherit; background: color-mix(in srgb, var(--surfaceColor), transparent 6%); color: var(--surfaceTxtColor); pointer-events: none; overflow-wrap: anywhere;",
+            },
+            t.i({ className: "ri-upload-cloud-line", ariaHidden: true, style: "font-size: 48px; color: var(--accentColor);" }),
+            t.p({ className: "txt-lg txt-bold" }, "Drop a .js file here"),
+            t.p({ className: "txt-hint" }, () => (data.isNew ? "Fill the file name and content in the selected directory." : "Replace all content in " + data.path + ".")),
+          ),
         ),
         t.div(
           { className: "field-help flex flex-nowrap gap-sm m-b-sm", style: "flex: 0 0 auto;" },
-          t.span(null, "UTF-8 text · Maximum ", () => app.utils.formattedFileSize(data.maxFileSize), " · Save draft first, then Apply changes to update pb_hooks."),
+          t.span(null, "Drop a .js file · UTF-8 text · Maximum ", () => app.utils.formattedFileSize(data.maxFileSize), " · Save draft first, then Apply changes to update pb_hooks."),
           t.span(
             { className: "m-l-auto txt-right", hidden: () => data.isNew || !data.modified },
             () => (data.pending ? "Draft saved: " : "File modified: "),
