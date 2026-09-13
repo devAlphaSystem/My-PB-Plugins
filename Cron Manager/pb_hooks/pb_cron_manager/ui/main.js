@@ -536,6 +536,7 @@ function managedCrons(list, header, nativeRefresh) {
               {
                 rid: JSON.stringify(run),
                 className: "accordion",
+                name: uid,
                 open: openRuns.has(run.id),
                 ontoggle: (event) => {
                   if (event.target.open) openRuns.add(run.id);
@@ -671,7 +672,7 @@ function managedCrons(list, header, nativeRefresh) {
   }
 
   function syncList() {
-    if (!current() || !data.ready || !list.isConnected) return;
+    if (!current() || !list.isConnected) return;
     listObserver?.disconnect();
     try {
       const jobs = new Map(data.jobs.map((job) => [job.nativeId, job]));
@@ -717,6 +718,20 @@ function managedCrons(list, header, nativeRefresh) {
           if (row.querySelector(".skeleton-loader")) hasSkeleton = true;
           else emptyRows.push(row);
           continue;
+        }
+        const actions = row.querySelector(":scope > .actions");
+        if (actions) {
+          const actionCount = String(actions.childElementCount);
+          if (!actions.classList.contains("autohide") || row.style.getPropertyValue("--cron-manager-action-count") !== actionCount) {
+            const expression = row.querySelector(":scope > .cron-expression");
+            actions.style.transition = "none";
+            if (expression) expression.style.transition = "none";
+            actions.classList.add("autohide");
+            row.style.setProperty("--cron-manager-action-count", actionCount);
+            row.getBoundingClientRect();
+            actions.style.removeProperty("transition");
+            if (expression) expression.style.removeProperty("transition");
+          }
         }
         const job = jobs.get(id);
         const text = [id, job?.name, job?.expression, row.querySelector(":scope > .cron-expression")?.textContent].filter(Boolean).join(" ").toLowerCase();
@@ -797,6 +812,27 @@ function managedCrons(list, header, nativeRefresh) {
       },
       onunmount: cleanup,
     },
+    t.style(
+      null,
+      `
+      @media (hover: hover) {
+        [data-pb="cronManager"] + .list > .list-item > .cron-expression {
+          transform: translateX(0);
+          transition: transform var(--animationSpeed);
+        }
+        [data-pb="cronManager"] + .list > .list-item:has(> .actions.autohide:not([hidden])):not(:hover, :focus-visible, :focus-within, :active) > .cron-expression {
+          /* Native actions use square buttons, 10px gaps and a -5px right margin. */
+          transform: translateX(calc((var(--smBtnHeight) + 10px) * var(--cron-manager-action-count) - 5px));
+        }
+        [data-pb="cronManager"] + .list > .list-item > .actions.autohide {
+          pointer-events: none;
+        }
+        [data-pb="cronManager"] + .list > .list-item:is(:hover, :focus-visible, :focus-within, :active) > .actions.autohide {
+          pointer-events: auto;
+        }
+      }
+    `,
+    ),
     t.div(
       { className: "alert danger m-b-sm", hidden: () => !data.startupError },
       t.p({ className: "txt-bold" }, "Some managed jobs could not be registered"),

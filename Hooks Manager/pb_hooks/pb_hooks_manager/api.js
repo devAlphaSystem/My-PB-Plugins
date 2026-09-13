@@ -26,11 +26,19 @@ function entryInfo(root, name) {
   return entry ? root.lstat(name) : null;
 }
 
-function openParent(root, segments) {
+function openParent(root, segments, mode) {
   let current = root;
   try {
     for (let i = 0; i < segments.length - 1; i++) {
-      const info = entryInfo(current, segments[i]);
+      let info = entryInfo(current, segments[i]);
+      if (!info && mode === "optional") {
+        if (current !== root) current.close();
+        return null;
+      }
+      if (!info && mode === "create") {
+        current.mkdir(segments[i], 0o700);
+        info = current.lstat(segments[i]);
+      }
       if (!info || !info.isDir() || info.mode() & (1 << 27)) { fail(400, "The parent directory must already exist and cannot be a symbolic link."); }
       const next = current.openRoot(segments[i]);
       if (current !== root) current.close();
@@ -148,6 +156,7 @@ function withRoot(e, callback) {
   let root;
   let parent;
   let draftsRoot;
+  let disabledRoot;
   try {
     const name = $filepath.base(__hooks);
     if ($filepath.dir(__hooks) === __hooks) fail(400, "Use a dedicated hooks directory, not a filesystem root.");
@@ -163,6 +172,14 @@ function withRoot(e, callback) {
     }
     if (!draftsInfo.isDir() || draftsInfo.mode() & (1 << 27)) { fail(400, "The draft storage must be a real directory beside the hooks directory."); }
     draftsRoot = parent.openRoot(draftsName);
+    const disabledName = name + ".disabled";
+    let disabledInfo = entryInfo(parent, disabledName);
+    if (!disabledInfo) {
+      parent.mkdir(disabledName, 0o700);
+      disabledInfo = parent.lstat(disabledName);
+    }
+    if (!disabledInfo.isDir() || disabledInfo.mode() & (1 << 27)) { fail(400, "The disabled storage must be a real directory beside the hooks directory."); }
+    disabledRoot = parent.openRoot(disabledName);
     const previous = entryInfo(draftsRoot, "state.json") ? readFile(draftsRoot, "state.json", "state.json", MAX_STATE_SIZE) : null;
     const state = previous
       ? JSON.parse(previous.content)
@@ -203,14 +220,18 @@ function withRoot(e, callback) {
         if (state.apply.current === draft.path && state.apply.currentRevision === draft.revision) draft.inFlight = true;
       });
     }
-    const context = { root: root, draftsRoot: draftsRoot, state: state, previous: previous, progressPrevious: progressPrevious };
+    const context = { root: root, parent: parent, hooksName: name, disabledRoot: disabledRoot, draftsRoot: draftsRoot, state: state, previous: previous, progressPrevious: progressPrevious };
     return callback(context);
   } catch (err) {
     if (err instanceof ApiError) throw err;
     throw new ApiError(500, "The filesystem operation failed. Check the PocketBase process permissions and available disk space.");
   } finally {
     try {
-      if (draftsRoot) draftsRoot.close();
+      try {
+        if (disabledRoot) disabledRoot.close();
+      } finally {
+        if (draftsRoot) draftsRoot.close();
+      }
     } finally {
       try {
         if (root) root.close();
@@ -241,15 +262,20 @@ function saveProgress(context) {
   context.progressPrevious = { revision: $security.sha256(content) };
 }
 
-function currentFile(root, path) {
+function currentFile(root, path, optionalParent) {
   const segments = validatePath(path);
-  const parent = openParent(root, segments);
+  const parent = openParent(root, segments, optionalParent ? "optional" : undefined);
+  if (!parent) return null;
   try {
     const name = segments[segments.length - 1];
     return entryInfo(parent, name) ? readFile(parent, name, path) : null;
   } finally {
     if (parent !== root) parent.close();
   }
+}
+
+function requireEnabled(context, path) {
+  if (currentFile(context.disabledRoot, path, true)) { fail(409, "This path is registered in Hooks Disabled. Enable it before creating, editing or applying changes to it."); }
 }
 
 function viewFile(context, path) {
@@ -299,12 +325,13 @@ exports.list = function (e) {
   return withRoot(e, function (context) {
     const root = context.root;
     const files = [];
+    const disabledFiles = [];
     const directories = [""];
     let entriesCount = 0;
-    function visit(directory, prefix, depth) {
+    function visit(directory, prefix, depth, disabled) {
       const entries = directory.fs().readDir(".");
       for (const entry of entries) {
-        if (++entriesCount > MAX_ENTRIES) fail(413, "The hooks directory contains too many entries to display (limit: 10000).");
+        if (++entriesCount > MAX_ENTRIES) fail(413, "The active and disabled hooks directories contain too many entries to display (limit: 10000).");
         const name = entry.name();
         if (!allowedSegment(name)) continue;
         const info = directory.lstat(name);
@@ -312,13 +339,18 @@ exports.list = function (e) {
         const path = prefix ? prefix + "/" + name : name;
         if (info.isDir()) {
           if (depth >= MAX_DEPTH - 1) continue;
-          directories.push(path);
+          if (!disabled) directories.push(path);
           const child = directory.openRoot(name);
-          try { visit(child, path, depth + 1); } finally { child.close(); }
-        } else if (info.mode().isRegular() && EXTENSIONS.test(name)) { files.push(metadata(path, info)); }
+          try { visit(child, path, depth + 1, disabled); } finally { child.close(); }
+        } else if (info.mode().isRegular() && EXTENSIONS.test(name)) {
+          const file = metadata(path, info);
+          if (disabled) file.disabled = true;
+          (disabled ? disabledFiles : files).push(file);
+        }
       }
     }
     visit(root, "", 0);
+    visit(context.disabledRoot, "", 0, true);
     context.state.drafts.forEach(function (draft) {
       let item = files.find(function (file) { return file.path === draft.path; });
       if (!item) {
@@ -330,8 +362,9 @@ exports.list = function (e) {
       item.modified = draft.modified;
     });
     files.sort(function (a, b) { return a.path.localeCompare(b.path); });
+    disabledFiles.sort(function (a, b) { return a.path.localeCompare(b.path); });
     const filesByPath = Object.create(null);
-    files.forEach(function (file) { filesByPath[__hooks[0] === "/" ? file.path : file.path.toLowerCase()] = file; });
+    disabledFiles.concat(files).forEach(function (file) { filesByPath[__hooks[0] === "/" ? file.path : file.path.toLowerCase()] = file; });
     const hiddenFiles = context.state.hiddenPaths.map(function (path) {
       const file = filesByPath[__hooks[0] === "/" ? path : path.toLowerCase()];
       if (file) {
@@ -347,6 +380,7 @@ exports.list = function (e) {
       Object.assign(status(e, context.state), {
         files: files,
         hiddenFiles: hiddenFiles,
+        disabledFiles: disabledFiles,
         directories: directories,
         maxFileSize: MAX_FILE_SIZE,
       }),
@@ -363,7 +397,15 @@ exports.file = function (e) {
   validatePath(path);
 
   return withRoot(e, function (context) {
-    if (readOnly) return e.json(200, viewFile(context, path));
+    if (readOnly) {
+      if (e.request.url.query().get("disabled") === "true") {
+        const file = currentFile(context.disabledRoot, path, true);
+        if (!file) fail(404, "The disabled file no longer exists.");
+        return e.json(200, Object.assign(file, { disabled: true }));
+      }
+      return e.json(200, viewFile(context, path));
+    }
+    requireEnabled(context, path);
     let draft = context.state.drafts.find(function (item) { return item.path === path; });
     if (draft && draft.inFlight) fail(409, "An interrupted apply needs review. Apply again or discard this saved draft first.");
     const current = currentFile(context.root, path);
@@ -429,6 +471,37 @@ exports.visibility = function (e) {
   });
 };
 
+exports.activation = function (e) {
+  const body = e.requestInfo().body;
+  if (!body || typeof body !== "object" || Array.isArray(body) || typeof body.disabled !== "boolean") { fail(400, "Provide the hook path, revision and a boolean disabled value."); }
+  const segments = validatePath(body.path);
+  return withRoot(e, function (context) {
+    const pending = context.state.drafts.some(function (draft) { return __hooks[0] === "/" ? draft.path === body.path : draft.path.toLowerCase() === body.path.toLowerCase(); });
+    if (pending) fail(409, "Apply or discard this file's saved draft before disabling or enabling it.");
+    const sourceRoot = body.disabled ? context.root : context.disabledRoot;
+    const targetRoot = body.disabled ? context.disabledRoot : context.root;
+    const source = openParent(sourceRoot, segments);
+    let target;
+    try {
+      const name = segments[segments.length - 1];
+      requireRevision(readFile(source, name, body.path).revision, body.revision);
+      target = openParent(targetRoot, segments, "create");
+      if (entryInfo(target, name)) fail(409, "A file already exists at the destination. Resolve the duplicate before disabling or enabling this hook.");
+      const sourcePath = context.hooksName + (body.disabled ? "" : ".disabled") + "/" + body.path;
+      const targetPath = context.hooksName + (body.disabled ? ".disabled" : "") + "/" + body.path;
+      context.parent.rename(sourcePath, targetPath);
+      e.app.store().set(PREFIX + "restartRequired", true);
+    } finally {
+      try {
+        if (target && target !== targetRoot) target.close();
+      } finally {
+        if (source !== sourceRoot) source.close();
+      }
+    }
+    return e.json(200, Object.assign(status(e, context.state), { path: body.path, disabled: body.disabled }));
+  });
+};
+
 function appliedOnDisk(draft, current) { return draft.operation === "delete" ? !current : !!current && current.revision === $security.sha256(draft.content); }
 
 function checkBase(draft, current) {
@@ -444,7 +517,10 @@ exports.apply = function (e) {
     if (state.apply && state.apply.id === body.requestId) return e.json(200, status(e, state));
     if (body.revision !== state.revision) fail(409, "The saved drafts changed. Refresh and review them before applying.");
     if (!state.drafts.length) fail(400, "There are no saved drafts to apply.");
-    state.drafts.forEach(function (draft) { checkBase(draft, currentFile(context.root, draft.path)); });
+    state.drafts.forEach(function (draft) {
+      requireEnabled(context, draft.path);
+      checkBase(draft, currentFile(context.root, draft.path));
+    });
     saveState(context);
     state.apply = {
       id: body.requestId,
@@ -460,6 +536,7 @@ exports.apply = function (e) {
     try {
       while (state.drafts.length) {
         const draft = state.drafts[0];
+        requireEnabled(context, draft.path);
         const current = currentFile(context.root, draft.path);
         checkBase(draft, current);
         const recovered = draft.inFlight && appliedOnDisk(draft, current);

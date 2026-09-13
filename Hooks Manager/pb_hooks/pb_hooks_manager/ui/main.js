@@ -20,9 +20,10 @@ app.pb.authStore.onChange((_, record) => {
 });
 
 function pageHooks(route) {
-  app.store.title = "Hooks";
-
-  const settings = route.path === "#/settings/hooks";
+  const disabledSettings = route.path === "#/settings/hooks-disabled";
+  const settings = disabledSettings || route.path === "#/settings/hooks";
+  const settingsTitle = disabledSettings ? "Hooks Disabled" : "Hooks Hidden";
+  app.store.title = settings ? settingsTitle : "Hooks";
   const owner = app.pb.authStore.record.id;
   const uniqueId = "hooks_manager_" + app.utils.randomString();
   const requestKeys = {
@@ -35,6 +36,7 @@ function pageHooks(route) {
   const data = store({
     files: [],
     hiddenFiles: [],
+    disabledFiles: [],
     directories: [""],
     search: "",
     ready: false,
@@ -69,6 +71,8 @@ function pageHooks(route) {
     get isBusy() { return data.busy || data.loading || data.waiting; },
     get visibleFiles() { return data.files.filter((file) => !file.hidden); },
     get currentHidden() { return data.files.some((file) => file.path === data.path && file.hidden); },
+    get currentDisabled() { return data.disabledFiles.some((file) => file.path === data.path) && !data.files.some((file) => file.path === data.path); },
+    get settingsFiles() { return disabledSettings ? data.disabledFiles : data.hiddenFiles; },
     get filteredFiles() {
       const search = data.search.trim().toLowerCase();
       return data.visibleFiles.filter((file) => file.path.toLowerCase().includes(search));
@@ -146,6 +150,7 @@ function pageHooks(route) {
       if (!isCurrent(token)) { return; }
       if (JSON.stringify(data.files) !== JSON.stringify(result.files)) { data.files = result.files; }
       if (JSON.stringify(data.hiddenFiles) !== JSON.stringify(result.hiddenFiles)) { data.hiddenFiles = result.hiddenFiles; }
+      if (JSON.stringify(data.disabledFiles) !== JSON.stringify(result.disabledFiles)) { data.disabledFiles = result.disabledFiles; }
       if (JSON.stringify(data.directories) !== JSON.stringify(result.directories)) { data.directories = result.directories; }
       acceptStatus(result);
       data.maxFileSize = result.maxFileSize;
@@ -153,10 +158,19 @@ function pageHooks(route) {
       data.listError = "";
 
       if (settings) return;
+      if (data.currentDisabled) {
+        if (!data.dirty && !data.conflict) clearEditor();
+        else {
+          data.conflict = true;
+          data.missing = true;
+          rememberDraft();
+          return;
+        }
+      }
       if (data.currentHidden && !data.dirty && !data.conflict) clearEditor();
       if (!data.hasFile) {
         if (data.error && !notify) return;
-        if (data.visibleFiles.length) { await loadFile(data.visibleFiles[0].path); } else if (!data.files.length) { newFile(); }
+        if (data.visibleFiles.length) { await loadFile(data.visibleFiles[0].path); } else if (!data.files.length && !data.disabledFiles.length) { newFile(); }
         return;
       }
 
@@ -481,33 +495,70 @@ function pageHooks(route) {
     } else { refresh(); }
   }
 
-  async function setFileHidden(path, hidden) {
+  async function setFileState(path, value, kind = "hidden", revision = "") {
     if (!isCurrent(generation) || !data.ready || data.isBusy || !path) return;
+    const activation = kind === "disabled";
     const token = ++generation;
     cancelReads();
     data.busy = true;
     data.error = "";
     try {
-      const result = await app.pb.send(hooksApi + "/visibility", {
+      if (activation && !value) {
+        const file = await app.pb.send(hooksApi + "/file", {
+          method: "GET",
+          query: { path, disabled: "true" },
+          requestKey: requestKeys.file,
+        });
+        if (!isCurrent(token)) return;
+        revision = file.revision;
+      }
+      const result = await app.pb.send(hooksApi + (activation ? "/activation" : "/visibility"), {
         method: "POST",
-        body: { path, hidden },
+        body: { path, [kind]: value, ...(activation ? { revision } : {}) },
         requestKey: requestKeys.write,
+        ...(activation ? { signal: AbortSignal.timeout(15000) } : {}),
       });
       if (isCurrent(token)) {
         acceptStatus(result);
-        data.files = data.files.map((file) => (file.path === path ? { ...file, hidden } : file));
-        if (!hidden) data.hiddenFiles = data.hiddenFiles.filter((file) => file.path !== path);
-        if (hidden && data.path === path) clearEditor();
-        app.toasts.success(hidden ? "Hook hidden. Show it again in Settings > Hooks." : "Hook visibility restored.");
+        if (activation) {
+          if (value) data.files = data.files.filter((file) => file.path !== path);
+          else data.disabledFiles = data.disabledFiles.filter((file) => file.path !== path);
+          app.toasts.success(value ? "Hook disabled. Enable it again in Settings > Plugins > Hooks Disabled." : "Hook enabled. Its previous visibility preference was preserved.");
+        } else {
+          data.files = data.files.map((file) => (file.path === path ? { ...file, hidden: value } : file));
+          if (!value) data.hiddenFiles = data.hiddenFiles.filter((file) => file.path !== path);
+          app.toasts.success(value ? "Hook hidden. Show it again in Settings > Plugins > Hooks Hidden." : "Hook visibility restored.");
+        }
+        if (value && data.path === path) clearEditor();
       }
     } catch (err) {
-      if (isCurrent(token)) showError(err);
+      if (isCurrent(token)) {
+        if (activation && !err?.status) {
+          data.error = "The action could not be confirmed. PocketBase may be restarting. Refresh the lists before trying again.";
+          app.toasts.error(data.error);
+        } else { showError(err); }
+      }
     } finally {
       if (alive && app.pb.authStore.record?.id === owner) {
         data.busy = false;
         refresh();
       }
     }
+  }
+
+  function confirmFileDisabled(path, disabled) {
+    if (!isCurrent(generation) || !data.ready || data.isBusy || !path) return;
+    if (disabled && (data.pending || data.conflict || data.path !== path)) return;
+    const revision = disabled ? data.revision : "";
+    app.modals.confirm(
+      t.div({ className: "txt-center" }, t.h6(null, (disabled ? "Disable " : "Enable ") + path + "?"), t.p(null, disabled ? "The file will move to pb_hooks.disabled and remain available in Hooks Disabled." : "The file will return to its original path in pb_hooks. Its visibility preference will be preserved."), t.p(null, "This takes effect after PocketBase restarts. If it does not restart automatically, restart the instance externally."), disabled && data.dirty ? t.p(null, "Your unsaved editing will be discarded.") : null),
+      () => {
+        if (disabled && (data.path !== path || data.revision !== revision || data.pending || data.conflict)) return;
+        return setFileState(path, disabled, "disabled", revision);
+      },
+      null,
+      { yesButton: disabled ? "Disable" : "Enable", noButton: "Cancel" },
+    );
   }
 
   function onKeyDown(event) {
@@ -563,40 +614,41 @@ function pageHooks(route) {
       ),
       t.div(
         { className: "page-content full-height" },
-        t.header({ className: "page-header" }, t.nav({ className: "breadcrumbs" }, t.div({ className: "breadcrumb-item" }, "Settings"), t.div({ className: "breadcrumb-item" }, "Hooks"))),
+        t.header({ className: "page-header" }, t.nav({ className: "breadcrumbs" }, t.div({ className: "breadcrumb-item" }, "Settings"), t.div({ className: "breadcrumb-item" }, settingsTitle))),
         t.div(
           { className: "wrapper m-b-base" },
           t.div(
             { className: "flex gap-10 m-b-sm" },
-            t.div({ className: "txt-lg" }, "Hidden hooks"),
+            t.div({ className: "txt-lg" }, disabledSettings ? "Disabled hooks" : "Hidden hooks"),
             app.components.refreshButton({
               className: "btn sm transparent secondary circle tooltip-bottom",
-              tooltip: "Refresh hidden hooks",
+              tooltip: disabledSettings ? "Refresh disabled hooks" : "Refresh hidden hooks",
               disabled: () => data.isBusy || data.refreshing,
               onclick: () => refresh(true),
             }),
           ),
           t.div({ className: "alert danger m-b-sm", hidden: () => !data.listError }, () => data.listError),
           t.div({ className: "alert danger m-b-sm", hidden: () => !data.error }, () => data.error),
+          t.div({ className: "alert info m-b-sm", hidden: () => !data.restartRequired }, "Hook files changed. If PocketBase has not restarted automatically, restart the instance externally to load the changes."),
           t.div(
             { className: "list" },
-            t.div({ className: "list-content" }, t.div({ className: "list-item", hidden: () => data.ready || !data.refreshing }, t.div({ className: "skeleton-loader" })), t.div({ className: "list-item", hidden: () => !data.ready || !!data.hiddenFiles.length }, t.div({ className: "content block txt-hint" }, "No hidden hooks found.")), () =>
-              data.hiddenFiles.map((file) =>
+            t.div({ className: "list-content" }, t.div({ className: "list-item", hidden: () => data.ready || !data.refreshing }, t.div({ className: "skeleton-loader" })), t.div({ className: "list-item", hidden: () => !data.ready || !!data.settingsFiles.length }, t.div({ className: "content block txt-hint" }, disabledSettings ? "No disabled hooks found." : "No hidden hooks found.")), () =>
+              data.settingsFiles.map((file) =>
                 t.div(
                   { className: "list-item" },
                   t.i({ className: "ri-file-code-line", ariaHidden: true }),
-                  t.div({ className: "content" }, t.span({ className: "txt-ellipsis", title: file.path }, file.path), !file.missing ? t.small({ className: "txt-hint txt-nowrap" }, "(" + app.utils.formattedFileSize(file.size) + ")") : null, file.pending ? t.span({ className: "label sm warning" }, file.pending) : null, file.missing ? t.small({ className: "txt-hint" }, "File no longer exists") : null),
+                  t.div({ className: "content" }, t.span({ className: "txt-ellipsis", title: file.path }, file.path), !file.missing ? t.small({ className: "txt-hint txt-nowrap" }, "(" + app.utils.formattedFileSize(file.size) + ")") : null, file.pending ? t.span({ className: "label sm warning" }, file.pending) : null, file.disabled && !disabledSettings ? t.span({ className: "label sm" }, "Disabled") : null, file.hidden && disabledSettings ? t.span({ className: "label sm" }, "Hidden") : null, file.missing ? t.small({ className: "txt-hint" }, "File no longer exists") : null),
                   t.nav(
                     { className: "actions" },
                     t.button(
                       {
                         type: "button",
                         className: "btn sm circle secondary transparent",
-                        ariaLabel: app.attrs.tooltip("Show"),
+                        ariaLabel: app.attrs.tooltip(disabledSettings ? "Enable" : "Show"),
                         disabled: () => data.isBusy,
-                        onclick: () => setFileHidden(file.path, false),
+                        onclick: () => (disabledSettings ? confirmFileDisabled(file.path, false) : setFileState(file.path, false)),
                       },
-                      t.i({ className: "ri-eye-line", ariaHidden: true }),
+                      t.i({ className: disabledSettings ? "ri-play-circle-line" : "ri-eye-line", ariaHidden: true }),
                     ),
                   ),
                 ),
@@ -604,7 +656,7 @@ function pageHooks(route) {
             ),
             t.div({ className: "list-item" }, t.a({ href: "#/hooks", className: "btn secondary block" }, t.i({ className: "ri-code-box-line", ariaHidden: true }), t.span({ className: "txt" }, "Manage hooks"))),
           ),
-          t.p({ className: "txt-sm txt-hint m-t-sm" }, "Hidden files keep running normally. Show a file to return it to the Hooks list."),
+          t.p({ className: "txt-sm txt-hint m-t-sm" }, disabledSettings ? "Disabled files are stored in pb_hooks.disabled. Enable a file to restore it, then restart PocketBase if it does not restart automatically." : "Hiding only changes visibility. Show a file to restore its visibility; disabled files must also be enabled in Hooks Disabled."),
         ),
         t.footer({ className: "page-footer" }, app.components.credits()),
       ),
@@ -705,12 +757,24 @@ function pageHooks(route) {
             {
               type: "button",
               className: "btn transparent secondary circle",
-              hidden: () => !data.path || data.isNew || data.currentHidden,
+              hidden: () => !data.path || data.isNew || data.currentHidden || data.currentDisabled,
               ariaLabel: app.attrs.tooltip("Hide"),
               disabled: () => data.isBusy || !data.ready,
-              onclick: () => confirmDiscard(() => setFileHidden(data.path, true)),
+              onclick: () => confirmDiscard(() => setFileState(data.path, true)),
             },
             t.i({ className: "ri-eye-off-line", ariaHidden: true }),
+          ),
+          t.button(
+            {
+              type: "button",
+              className: "btn transparent secondary circle",
+              hidden: () => !data.path || data.isNew || data.currentDisabled,
+              ariaLabel: app.attrs.tooltip("Disable"),
+              title: () => (data.pending ? "Apply or discard this saved draft before disabling the file" : "Disable"),
+              disabled: () => data.isBusy || !data.ready || !!data.pending || data.conflict,
+              onclick: () => confirmFileDisabled(data.path, true),
+            },
+            t.i({ className: "ri-forbid-line", ariaHidden: true }),
           ),
           t.button(
             {
@@ -769,7 +833,7 @@ function pageHooks(route) {
         t.p(null, () => data.applyReport?.error || "Review the files and use Apply changes again to continue with the remaining drafts."),
         t.p(null, () => (data.applyReport?.current ? "Last operation: " + data.applyReport.current : "")),
       ),
-      t.div({ className: "alert info m-b-sm", hidden: () => !data.restartRequired }, t.p({ className: "txt-bold" }, "Hook files applied"), t.p(null, "If PocketBase has not restarted automatically, restart the instance externally after applying all drafts to load the changes.")),
+      t.div({ className: "alert info m-b-sm", hidden: () => !data.restartRequired }, t.p({ className: "txt-bold" }, "Hook files changed"), t.p(null, "If PocketBase has not restarted automatically, restart the instance externally to load the changes.")),
       t.div(
         { className: "alert danger m-b-sm", hidden: () => !data.listError },
         t.p(null, () => data.listError),
@@ -780,7 +844,7 @@ function pageHooks(route) {
       ),
       t.div(
         { className: "alert warning m-b-sm", hidden: () => !data.conflict },
-        t.p({ className: "txt-bold" }, () => (data.missing ? "File or saved draft removed" : "File or saved draft changed")),
+        t.p({ className: "txt-bold" }, () => (data.currentDisabled ? "Hook disabled" : data.missing ? "File or saved draft removed" : "File or saved draft changed")),
         t.p(null, "Your editor content has been preserved. Copy it before reloading if you need to merge changes."),
         t.button(
           {
@@ -855,6 +919,7 @@ function pageHooks(route) {
             t.span({ className: "label sm warning", hidden: () => !data.dirty }, "Unsaved changes"),
             t.span({ className: "label sm", hidden: () => !data.pending }, () => (data.pending === "delete" ? "Removal pending" : "Saved draft")),
             t.span({ className: "label sm", hidden: () => !data.currentHidden }, "Hidden"),
+            t.span({ className: "label sm", hidden: () => !data.currentDisabled }, "Disabled"),
           ),
           t.textarea({
             id: uniqueId + "_content",
@@ -895,7 +960,7 @@ function pageHooks(route) {
         },
         t.span({ className: "loader" }),
       ),
-      t.div({ className: "txt-center m-auto", hidden: () => !data.ready || data.hasFile || !data.files.length || !!data.visibleFiles.length }, t.p({ className: "txt-hint" }, "All hook files are hidden."), t.a({ href: "#/settings/hooks", className: "btn secondary" }, "Show hidden hooks")),
+      t.div({ className: "txt-center m-auto", hidden: () => !data.ready || data.hasFile || (!data.files.length && !data.disabledFiles.length) || !!data.visibleFiles.length }, t.p({ className: "txt-hint" }, "All hook files are hidden or disabled."), t.a({ href: "#/settings/hooks", className: "btn secondary", hidden: () => !data.hiddenFiles.length }, "Show hidden hooks"), t.a({ href: "#/settings/hooks-disabled", className: "btn secondary", hidden: () => !data.disabledFiles.length }, "Enable disabled hooks")),
       t.footer(
         { className: "page-footer" },
         t.span({ className: "txt" }, "Total: ", () => data.visibleFiles.length),
@@ -915,6 +980,9 @@ app.store.headerLinks.splice(
   },
 );
 app.routes.superuserOnly("#/hooks", pageHooks);
-const hooksSettingsGroup = Object.values(app.store.settingsNavGroups).find((links) => links.some((link) => link.href === "#/settings/backups"));
-hooksSettingsGroup.splice(hooksSettingsGroup.findIndex((link) => link.href === "#/settings/backups") + 1, 0, { href: "#/settings/hooks", icon: "ri-code-box-line", label: "Hooks" });
+if (!app.store.settingsNavGroups.Plugins) { app.store.settingsNavGroups.Plugins = []; }
+const hooksSettingsGroup = app.store.settingsNavGroups.Plugins;
+if (!hooksSettingsGroup.some((link) => link.href === "#/settings/hooks")) { hooksSettingsGroup.push({ href: "#/settings/hooks", icon: "ri-eye-off-line", label: "Hooks Hidden" }); }
 app.routes.superuserOnly("#/settings/hooks", pageHooks);
+if (!hooksSettingsGroup.some((link) => link.href === "#/settings/hooks-disabled")) { hooksSettingsGroup.push({ href: "#/settings/hooks-disabled", icon: "ri-forbid-line", label: "Hooks Disabled" }); }
+app.routes.superuserOnly("#/settings/hooks-disabled", pageHooks);

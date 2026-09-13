@@ -18,7 +18,6 @@ module.exports.latest = function (e) {
   }
 
   try {
-    // Store serialized data so separate JSVM request runtimes share only plain values.
     const saved = e.app.store().get(PREFIX + "cache");
     let cache = saved ? JSON.parse(saved) : null;
     if (!cache || Date.now() >= cache.nextCheckAt) {
