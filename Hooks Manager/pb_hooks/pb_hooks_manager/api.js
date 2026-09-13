@@ -173,6 +173,15 @@ function withRoot(e, callback) {
           apply: null,
         };
     if (state.version !== 1 || !Array.isArray(state.drafts) || state.drafts.length > MAX_DRAFTS || typeof state.revision !== "string") { fail(500, "The saved draft state is invalid. Check the draft storage before continuing."); }
+    if (state.hiddenPaths === undefined) state.hiddenPaths = [];
+    if (!Array.isArray(state.hiddenPaths) || state.hiddenPaths.length > MAX_ENTRIES) { fail(500, "The saved hidden hooks list is invalid. Check the draft storage before continuing."); }
+    const hiddenKeys = Object.create(null);
+    state.hiddenPaths.forEach(function (path) {
+      validatePath(path);
+      const key = __hooks[0] === "/" ? path : path.toLowerCase();
+      if (hiddenKeys[key]) fail(500, "The saved hidden hooks list contains duplicate paths.");
+      hiddenKeys[key] = true;
+    });
     const paths = [];
     let draftBytes = 0;
     state.drafts.forEach(function (draft) {
@@ -221,6 +230,7 @@ function saveState(context) {
   if (size > MAX_DRAFT_BYTES) fail(413, "Saved drafts exceed the combined 8 MiB limit.");
   context.state.revision = $security.randomString(32);
   const content = JSON.stringify(Object.assign({}, context.state, { apply: undefined }));
+  if (toBytes(content).length > MAX_STATE_SIZE) fail(413, "Saved drafts and hidden hook preferences exceed the storage limit.");
   writeFile(context.draftsRoot, "state.json", "state.json", content, context.previous, MAX_STATE_SIZE);
   context.previous = { revision: $security.sha256(content) };
 }
@@ -275,7 +285,6 @@ function status(e, state) {
     pendingCount: state.drafts.length,
     apply: apply,
     restartRequired: e.app.store().get(PREFIX + "restartRequired") === true,
-    restartSupported: e.app.store().get(PREFIX + "restartSupported") === true,
   };
 }
 
@@ -321,11 +330,23 @@ exports.list = function (e) {
       item.modified = draft.modified;
     });
     files.sort(function (a, b) { return a.path.localeCompare(b.path); });
+    const filesByPath = Object.create(null);
+    files.forEach(function (file) { filesByPath[__hooks[0] === "/" ? file.path : file.path.toLowerCase()] = file; });
+    const hiddenFiles = context.state.hiddenPaths.map(function (path) {
+      const file = filesByPath[__hooks[0] === "/" ? path : path.toLowerCase()];
+      if (file) {
+        file.hidden = true;
+        return file;
+      }
+      return { path: path, hidden: true, missing: true };
+    });
+    hiddenFiles.sort(function (a, b) { return a.path.localeCompare(b.path); });
     directories.sort();
     return e.json(
       200,
       Object.assign(status(e, context.state), {
         files: files,
+        hiddenFiles: hiddenFiles,
         directories: directories,
         maxFileSize: MAX_FILE_SIZE,
       }),
@@ -387,6 +408,26 @@ exports.discard = function (e) {
 };
 
 exports.status = function (e) { return withRoot(e, function (context) { return e.json(200, status(e, context.state)); }); };
+
+exports.visibility = function (e) {
+  const body = e.requestInfo().body;
+  if (!body || typeof body !== "object" || Array.isArray(body) || typeof body.hidden !== "boolean") { fail(400, "Provide the hook path and a boolean hidden value."); }
+  validatePath(body.path);
+  return withRoot(e, function (context) {
+    const paths = context.state.hiddenPaths;
+    const index = paths.findIndex(function (path) { return __hooks[0] === "/" ? path === body.path : path.toLowerCase() === body.path.toLowerCase(); });
+    if (body.hidden && index === -1) {
+      viewFile(context, body.path);
+      if (paths.length >= MAX_ENTRIES) fail(413, "Show hidden hooks before hiding more files (limit: 10000).");
+      paths.push(body.path);
+      saveState(context);
+    } else if (!body.hidden && index !== -1) {
+      paths.splice(index, 1);
+      saveState(context);
+    }
+    return e.json(200, status(e, context.state));
+  });
+};
 
 function appliedOnDisk(draft, current) { return draft.operation === "delete" ? !current : !!current && current.revision === $security.sha256(draft.content); }
 
@@ -456,20 +497,5 @@ exports.apply = function (e) {
       try { saveProgress(context); } catch (_) { fail(500, "Apply was interrupted and its final progress could not be saved. Refresh and review the remaining drafts before retrying."); }
       return e.json(200, status(e, state));
     }
-  });
-};
-
-exports.restart = function (e) {
-  if (e.app.store().get(PREFIX + "restartSupported") !== true) { fail(403, "Restart from this panel is available only on Linux. Restart this instance externally."); }
-  const body = e.requestInfo().body;
-  return withRoot(e, function (context) {
-    if (!body || body.confirm !== true || body.bootId !== e.app.store().get(PREFIX + "bootId")) { fail(409, "Refresh the page and confirm the restart of this instance."); }
-    if (context.state.drafts.length) fail(409, "Apply or discard the saved drafts before restarting.");
-    const response = JSON.stringify({ accepted: true });
-    e.response.header().set("Content-Length", String(toBytes(response).length));
-    e.blob(202, "application/json", toBytes(response));
-    e.flush();
-    try { e.app.restart(); } catch (_) {}
-    e.app.logger().error("Hooks Manager could not confirm the requested restart. Check the server.");
   });
 };

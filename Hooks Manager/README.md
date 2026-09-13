@@ -1,6 +1,6 @@
 # PB Hooks Manager
 
-Adds a **Hooks** page to the **PocketBase v0.40.3** admin dashboard menu. The page lets you list, open, create, edit, and delete files in the instance's hooks directory, using the layout, form controls, and CSS classes already available in the dashboard.
+Adds a **Hooks** page to the **PocketBase v0.40.3** admin dashboard menu. The page lets you list, open, create, edit, delete, and hide files in the instance's hooks directory, using the layout, form controls, and CSS classes already available in the dashboard. **Settings > Hooks**, between **Backups** and **Crons**, lists hidden files and lets you show them again.
 
 Installation consists of copying three files and restarting the instance using your usual procedure. No additional flags, recompilation, executable replacement, package installation, collection changes, or migrations are required. The plugin does not modify the database.
 
@@ -8,13 +8,13 @@ Installation consists of copying three files and restarting the instance using y
 
 ## Installing on an existing instance
 
-On Linux, you can use the [one-command installer](../README.md#one-command-installation-on-linux) instead of copying the files manually. With PocketBase stopped, run this **inside the instance's `pb_hooks` directory**:
+On Linux, you can use the [one-command installer](../README.md#one-command-installation-on-linux) instead of copying the files manually. With PocketBase stopped, run this **from the instance's directory or directly inside its `pb_hooks` directory**:
 
 ```bash
 bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/devAlphaSystem/My-PB-Plugins/main/Hooks%20Manager/install.sh | bash'
 ```
 
-The command runs this folder's standalone `install.sh` and installs or updates only this plugin's three files. Start PocketBase and reload the dashboard afterward. Requirements and failure handling are documented in the linked installation guide.
+The command runs this folder's standalone `install.sh` and installs or updates only this plugin's three files. If the current directory is named `pb_hooks`, it installs there; otherwise, it uses the direct child `pb_hooks`, creating it if missing. Start PocketBase and reload the dashboard afterward. Requirements and failure handling are documented in the linked installation guide.
 
 For manual installation:
 
@@ -42,6 +42,8 @@ If you use `--hooksDir`, copy **the contents** of the package's `pb_hooks` direc
 
 Drafts are stored in a sibling directory whose path is the configured hooks directory path with `.drafts` appended: for example, `pb_hooks.drafts/state.json`. The apply journal is stored in `pb_hooks.drafts/apply.json`. The process must be able to create and write to this directory. It is outside `pb_data`; include it in your external backups if you want to retain drafts. All superusers share the saved changes, with revision checks to detect conflicts.
 
+Hidden file paths are also persisted in `state.json`, shared by all superusers, and retained after browser closure or instance restarts. Updating the plugin preserves existing drafts and starts with an empty hidden list if none has been saved. Hiding or showing a file writes only this private state, without changing the active hooks or triggering their watcher.
+
 In Docker, keep both the hooks directory and its sibling drafts directory on persistent storage. The parent directory must allow the drafts directory to be created, or you must create or mount it beforehand. If PocketBase runs as a service, use your usual stop and start procedure. The plugin does not run process manager commands.
 
 The PocketBase process needs read and write permissions for the hooks directory. File creation uses hard links to reject names that already exist, so the filesystem must support them.
@@ -50,8 +52,9 @@ The PocketBase process needs read and write permissions for the hooks directory.
 
 **Hooks** appears before **Settings** in the top menu. The sidebar shares its width preference with **Collections** and **Settings**: resizing it on any of these pages sets the width used when navigating to the others. Form labels sit inside the fields, following the native dashboard styling. The content field uses a monospace textarea, as in **Import collections**, that fills the remaining page height and scrolls internally for long files. Refresh and Copy use matching native circular buttons in the header. Below the editor, usage guidance is aligned to the left and the file or draft timestamp and size to the right in the same row.
 
-- **View:** entering Hooks automatically opens the first file in the list. If there are no files, the page opens **New file**. Unsaved editing retained in the tab takes priority when you return to the page. The list and selected file are checked every three seconds while the tab is visible. Changes made by another administrator or directly on the server appear in subsequent checks. This uses polling, not a WebSocket connection, and does not guarantee instant updates.
+- **View:** entering Hooks automatically opens the first visible file in the list. If there are no files, the page opens **New file**. If all files are hidden, it shows a link to **Settings > Hooks** and keeps pending changes available to apply. Unsaved editing retained in the tab takes priority when you return to the page. The list and selected file are checked every three seconds while the tab is visible. Changes made by another administrator or directly on the server appear in subsequent checks. This uses polling, not a WebSocket connection, and does not guarantee instant updates.
 - **Refresh and copy:** **Refresh files** reloads the selected file and updates the list, asking for confirmation before discarding unsaved editing or a conflict. While creating a new file, it updates only the list and preserves the editor. The **Copy** icon beside it copies the current editor content, including unsaved changes. Automatic checks never discard unsaved editing.
+- **Hide and show:** click the **Hide** eye icon beside **Copy** to hide the selected file from the sidebar, search, automatic selection, and visible total. Unsaved editing requires confirmation before it is discarded. Hidden files keep running normally; hiding does not disable, rename, or delete them. Saved drafts remain pending and are included in **Apply changes**. Open **Settings > Hooks** to see the hidden list in the same native list layout as **Backups**, then click **Show** beside a file to restore its visibility. This list also refreshes every three seconds while visible. If another administrator hides the file you are editing, your unsaved content is preserved with a **Hidden** label. Paths remain hidden until shown again, even if the file is removed externally; missing files are identified in the hidden list and their visibility preference can still be cleared with **Show**. Up to 10,000 hidden paths are allowed, subject to the saved state size limit.
 - **Create:** click **New file**, choose an existing folder under **Directory**, enter a name, and click **Save draft**. The new file is created in `pb_hooks` only when you apply the changes. For `lib/orders.js`, choose `lib` and enter `orders.js` as the name.
 - **Edit:** open a file, change its contents, and click **Save draft**. The draft is persisted on the server without modifying the active hook file. Ctrl+S also saves only the draft.
 - **Delete:** click **Stage deletion**. An existing file is marked for deletion and removed only when you apply the changes. For a new file that exists only as a draft, this action discards the draft.
@@ -76,9 +79,9 @@ Unsaved editing is retained only in the tab's memory when navigating between pag
 
 On Linux, the native watcher may restart PocketBase while changes are being applied. Disk errors, forced termination, or a restart can leave a batch partially applied. After a disconnection, the dashboard checks the persisted journal, shows how many file operations were confirmed, and retains the remaining drafts. Clicking **Apply changes** again resumes the pending changes after another confirmation. If an operation wrote a file but was interrupted before its completion was recorded, resuming compares the actual contents with the intended contents to avoid repeating an already completed change. Drafts are not automatically applied at startup, and changes to actual files are not automatically rolled back.
 
-The **Restart PocketBase** button is available only when the server is identified as Linux. It requires superuser authentication, explicit confirmation, no pending drafts, and the current instance identifier. It uses the native restart mechanism, which reuses the executable, arguments, and environment. The dashboard confirms a restart only after detecting a different startup identifier; HTTP 202 means only that the request was accepted. If it cannot confirm the restart within about a minute, it asks you to check the server outside the plugin. Linux detection uses `/proc/sys/kernel/ostype`; if it is unavailable, only this button and its API operation are disabled.
+Manual restarts must be performed outside the plugin, using the instance's usual service or process management procedure.
 
-**On Windows**, applying changes modifies the files, but you must restart PocketBase outside the plugin. The restart button is also unavailable on other operating systems; the native watcher's behavior remains unchanged. The plugin does not block restarts globally, intercept application shutdown, or change backup restoration.
+**On Windows**, applying changes modifies the files, but you must restart PocketBase outside the plugin. The native watcher's behavior remains unchanged. The plugin does not block restarts globally, intercept application shutdown, or change backup restoration.
 
 **Writing changes to disk does not reload hooks that have already been registered.** If the instance does not restart automatically, restart it to load the changes. Modules imported with `require()` may also remain cached. The manager does not execute saved code or validate it through a test run.
 
@@ -100,27 +103,21 @@ Base path: `/api/pb-hooks-manager`. All routes require superuser authentication.
 
 | Method and path               | Purpose                                                                  | Input                                                           |
 | ----------------------------- | ------------------------------------------------------------------------ | --------------------------------------------------------------- |
-| `GET /files`                  | Lists files, drafts, and batch status                                    | No body                                                         |
+| `GET /files`                  | Lists files, drafts, hidden files, and batch status                      | No body                                                         |
 | `GET /file?path=orders.pb.js` | Reads the saved draft, or the actual file if no draft exists             | URL-encoded `path` query parameter                              |
 | `POST /file`                  | Saves a draft for a new file                                             | `path` and `content` in JSON                                    |
 | `PUT /file`                   | Saves an edit as a draft                                                 | `path`, `content`, and `revision` in JSON                       |
 | `DELETE /file`                | Stages a deletion or cancels a pending creation                          | `path` and `revision` in JSON                                   |
 | `POST /discard`               | Discards only the saved draft                                            | `path` and `revision` in JSON                                   |
+| `POST /visibility`            | Hides or shows one file in the manager                                   | `path` and boolean `hidden` in JSON                             |
 | `POST /apply`                 | Applies all saved drafts                                                 | `confirm: true`, the batch `revision`, and a unique `requestId` |
 | `GET /status`                 | Retrieves batch status, the latest progress, and the instance identifier | No body                                                         |
-| `POST /restart`               | Requests a native restart, on Linux only                                 | `confirm: true` and the current `bootId`                        |
 
 Use the revision returned by the most recent read. An outdated revision, or an existing name when creating a file, returns HTTP 409. If another file operation is in progress, the API returns HTTP 423; try again later. Do not retry an update by automatically replacing the revision without reviewing the current contents.
 
+`GET /files` keeps all files in `files`, including hidden files and their pending drafts; hidden entries have `hidden: true`. The separate `hiddenFiles` list includes saved hidden paths whose files no longer exist, marked with `missing: true`. `POST /visibility` is an immediate, idempotent preference change and does not require a file revision. It validates the path, uses the same superuser authentication and operation lock, and returns the updated batch status. Hidden files remain accessible through the authenticated file API; hiding is a display preference, not an access restriction.
+
 `POST /apply` may return a progress status of `complete` or `partial`; HTTP 200 alone does not mean the entire batch was applied. A subsequent status check identifies an unfinished journal as `interrupted`. If all expected operations were already confirmed, it recognizes completion even if final state compaction was interrupted. Confirmed file operations are listed in `apply.completed`, and `pendingCount` reports the remaining drafts. Reusing the last apply request's identifier only retrieves its result; a confirmed attempt to resume uses a different identifier. The dashboard does not automatically retry mutations after a network failure.
-
-## Updating and uninstalling
-
-To update, stop the instance manually, replace only the three plugin files, start it using your usual procedure, and reload the dashboard with Ctrl+Shift+R. Version 1.1 does not require the watcher option used by the previous version. Leaving the watcher disabled is your choice and also works with the save/apply workflow.
-
-To uninstall, stop the instance manually and remove **only** `pb_hooks/pb_hooks_manager.pb.js`, `pb_hooks/pb_hooks_manager/api.js`, and `pb_hooks/pb_hooks_manager/ui/main.js`. Remove the `ui` and `pb_hooks_manager` directories only if they are empty and belong to this installation. Preserve all other hooks and start the instance again. There are no plugin collections or migrations to roll back.
-
-The sibling `pb_hooks.drafts` directory contains drafts and apply progress saved by users. Keep it for reinstallation, or remove it separately only after deciding to discard all drafts. Its contents are never applied automatically during installation or updates.
 
 ## Compatibility and validation
 
@@ -134,6 +131,7 @@ References for the target version:
 - [Native dashboard extension serving](https://github.com/pocketbase/pocketbase/blob/v0.40.3/apis/extensions.go).
 - [Loading extensions before initializing the router](https://github.com/pocketbase/pocketbase/blob/v0.40.3/ui/src/main.js).
 - [Dashboard routes and authenticated access](https://github.com/pocketbase/pocketbase/blob/v0.40.3/ui/src/router.js).
+- [Native Backups page layout](https://github.com/pocketbase/pocketbase/blob/v0.40.3/ui/src/settings/backups/pageBackupsSettings.js) and [list structure](https://github.com/pocketbase/pocketbase/blob/v0.40.3/ui/src/settings/backups/backupsList.js).
 - [Official executable initialization](https://github.com/pocketbase/pocketbase/blob/v0.40.3/examples/base/main.go).
 - [JavaScript hook loading and watching](https://github.com/pocketbase/pocketbase/blob/v0.40.3/plugins/jsvm/jsvm.go).
 

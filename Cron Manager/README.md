@@ -6,13 +6,13 @@ Installation consists of copying three files and restarting the instance using y
 
 ## Installing on an existing instance
 
-On Linux, you can use the [one-command installer](../README.md#one-command-installation-on-linux) instead of copying the files manually. With PocketBase stopped, run this **inside the instance's `pb_hooks` directory**:
+On Linux, you can use the [one-command installer](../README.md#one-command-installation-on-linux) instead of copying the files manually. With PocketBase stopped, run this **from the instance's directory or directly inside its `pb_hooks` directory**:
 
 ```bash
 bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/devAlphaSystem/My-PB-Plugins/main/Cron%20Manager/install.sh | bash'
 ```
 
-The command runs this folder's standalone `install.sh` and installs or updates only this plugin's three files. Start PocketBase and reload the dashboard afterward. Requirements and failure handling are documented in the linked installation guide.
+The command runs this folder's standalone `install.sh` and installs or updates only this plugin's three files. If the current directory is named `pb_hooks`, it installs there; otherwise, it uses the direct child `pb_hooks`, creating it if missing. Start PocketBase and reload the dashboard afterward. Requirements and failure handling are documented in the linked installation guide.
 
 For manual installation:
 
@@ -148,16 +148,6 @@ Base path: `/api/pb-cron-manager`. All endpoints require native superuser authen
 | `GET /history`           | Reads retained execution history              | Optional `jobId` query parameter                           |
 
 Use the revision returned by the most recent read. Do not automatically substitute a newer revision after a conflict. A manual `requestId` must contain exactly 32 letters or digits. A completed manual request returns HTTP 200 with a `run` object; inspect that record's status to determine whether execution succeeded. A successful HTTP response is not a guarantee that job code succeeded.
-
-## Updating and uninstalling
-
-To update, stop the instance manually, replace only the three plugin files, start it using your usual procedure, and reload the dashboard with Ctrl+Shift+R. Preserve `pb_data/pb_cron_manager` to retain jobs and history. Enabled jobs are registered again when the plugin starts.
-
-The Description field has been removed. Existing jobs still load; stored descriptions are ignored and are dropped the next time the jobs registry is saved.
-
-To uninstall, stop the instance manually and remove only `pb_hooks/pb_cron_manager.pb.js`, `pb_hooks/pb_cron_manager/api.js`, and `pb_hooks/pb_cron_manager/ui/main.js`. Remove their directories only if empty and owned by this installation, then start the instance again. Other hooks and native cron jobs remain unchanged. No plugin collections or migrations need to be removed.
-
-The data directory remains after uninstalling. Keep it to preserve jobs and history, or remove it separately only after deciding to discard that data. Reinstalling with this data present restores saved jobs, including their enabled state.
 
 ## Compatibility and validation
 

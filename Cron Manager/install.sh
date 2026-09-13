@@ -19,7 +19,18 @@
     [[ $(uname -s) == Linux ]] || fail 'This installer requires Linux.'
 
     target_dir=$(pwd -P)
-    [[ ${target_dir##*/} == pb_hooks && ! -L "$PWD" ]] || fail 'Run this command inside the actual pb_hooks directory of the target instance.'
+    if [[ ${target_dir##*/} == pb_hooks ]]; then
+        [[ ! -L "$PWD" ]] || fail 'Refusing a symbolic link: pb_hooks.'
+    else
+        target_dir="${target_dir%/}/pb_hooks"
+    fi
+
+    [[ ! -L "$target_dir" ]] || fail 'Refusing a symbolic link: pb_hooks.'
+    if [[ -e "$target_dir" ]]; then
+        [[ -d "$target_dir" ]] || fail 'Expected a directory: pb_hooks.'
+    else
+        mkdir -m 0755 -- "$target_dir"
+    fi
     [[ -w "$target_dir" && -x "$target_dir" ]] || fail 'The current user needs write and traversal permissions on pb_hooks.'
 
     directories=("$plugin" "$plugin/ui")

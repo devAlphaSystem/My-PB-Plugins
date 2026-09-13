@@ -8,9 +8,9 @@
         exit 1
     }
 
-    package='Hooks Manager'
-    plugin='pb_hooks_manager'
-    dashboard='/_/#/hooks'
+    package='Update Notifier'
+    plugin='pb_update_notifier'
+    dashboard='/_/#/collections'
 
     for dependency in uname curl tar gzip mktemp mkdir chmod mv rm; do
         command -v "$dependency" >/dev/null 2>&1 || fail "Required command is missing: $dependency."

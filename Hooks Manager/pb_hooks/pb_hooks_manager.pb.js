@@ -1,11 +1,6 @@
 /// <reference path="../pb_data/types.d.ts" />
 
 $app.onServe().bindFunc(function (e) {
-  let restartSupported = false;
-  if (__hooks[0] === "/") {
-    try { restartSupported = toString($os.readFile("/proc/sys/kernel/ostype")).trim() === "Linux"; } catch (_) {}
-  }
-  e.app.store().set("pb_hooks_manager.restartSupported", restartSupported);
   e.app.store().set("pb_hooks_manager.bootId", $security.randomString(32));
   e.app.store().set("pb_hooks_manager.restartRequired", false);
   e.uiExtensions = (e.uiExtensions || []).concat([
@@ -27,7 +22,7 @@ routerAdd("GET", "/api/pb-hooks-manager/files", function (e) { return require(__
 
 routerAdd("GET", "/api/pb-hooks-manager/status", function (e) { return require(__hooks + "/pb_hooks_manager/api.js").status(e); }, $apis.requireSuperuserAuth(), $apis.skipSuccessActivityLog());
 
-["apply", "discard", "restart"].forEach(function (action) {
+["apply", "discard", "visibility"].forEach(function (action) {
   routerAdd(
     "POST",
     "/api/pb-hooks-manager/" + action,

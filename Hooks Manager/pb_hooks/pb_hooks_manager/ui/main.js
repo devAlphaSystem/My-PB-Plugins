@@ -19,9 +19,10 @@ app.pb.authStore.onChange((_, record) => {
   if (retainedDraft && retainedDraft.owner !== record?.id) { retainDraft(null); }
 });
 
-function pageHooks() {
+function pageHooks(route) {
   app.store.title = "Hooks";
 
+  const settings = route.path === "#/settings/hooks";
   const owner = app.pb.authStore.record.id;
   const uniqueId = "hooks_manager_" + app.utils.randomString();
   const requestKeys = {
@@ -30,15 +31,15 @@ function pageHooks() {
     write: uniqueId + "_write",
     status: uniqueId + "_status",
   };
-  const draft = retainedDraft?.owner === owner ? retainedDraft : null;
+  const draft = !settings && retainedDraft?.owner === owner ? retainedDraft : null;
   const data = store({
     files: [],
+    hiddenFiles: [],
     directories: [""],
     search: "",
     ready: false,
     pendingCount: 0,
     batchRevision: "",
-    restartSupported: false,
     bootId: "",
     waiting: false,
     applyReport: null,
@@ -66,9 +67,11 @@ function pageHooks() {
     get hasFile() { return data.isNew || !!data.path; },
     get dirty() { return data.isNew || data.content !== data.originalContent; },
     get isBusy() { return data.busy || data.loading || data.waiting; },
+    get visibleFiles() { return data.files.filter((file) => !file.hidden); },
+    get currentHidden() { return data.files.some((file) => file.path === data.path && file.hidden); },
     get filteredFiles() {
       const search = data.search.trim().toLowerCase();
-      return data.files.filter((file) => file.path.toLowerCase().includes(search));
+      return data.visibleFiles.filter((file) => file.path.toLowerCase().includes(search));
     },
   });
 
@@ -80,7 +83,7 @@ function pageHooks() {
   function isCurrent(token) { return alive && token === generation && app.pb.authStore.record?.id === owner; }
 
   function rememberDraft() {
-    if (!alive || app.pb.authStore.record?.id !== owner) { return; }
+    if (settings || !alive || app.pb.authStore.record?.id !== owner) { return; }
     retainDraft(
       data.dirty || data.conflict
         ? {
@@ -142,15 +145,18 @@ function pageHooks() {
       });
       if (!isCurrent(token)) { return; }
       if (JSON.stringify(data.files) !== JSON.stringify(result.files)) { data.files = result.files; }
+      if (JSON.stringify(data.hiddenFiles) !== JSON.stringify(result.hiddenFiles)) { data.hiddenFiles = result.hiddenFiles; }
       if (JSON.stringify(data.directories) !== JSON.stringify(result.directories)) { data.directories = result.directories; }
       acceptStatus(result);
       data.maxFileSize = result.maxFileSize;
       data.ready = true;
       data.listError = "";
 
+      if (settings) return;
+      if (data.currentHidden && !data.dirty && !data.conflict) clearEditor();
       if (!data.hasFile) {
         if (data.error && !notify) return;
-        if (data.files.length) { await loadFile(data.files[0].path); } else { newFile(); }
+        if (data.visibleFiles.length) { await loadFile(data.visibleFiles[0].path); } else if (!data.files.length) { newFile(); }
         return;
       }
 
@@ -193,7 +199,6 @@ function pageHooks() {
     data.pendingCount = result.pendingCount;
     data.batchRevision = result.revision;
     data.restartRequired = result.restartRequired;
-    data.restartSupported = result.restartSupported;
     data.bootId = result.bootId;
     data.applyReport = result.apply;
   }
@@ -201,12 +206,7 @@ function pageHooks() {
   function completeOperation(result) {
     if (!operation) return false;
     acceptStatus(result);
-    if (operation.type === "restart") {
-      if (result.bootId !== operation.bootId) {
-        window.location.reload();
-        return true;
-      }
-    } else if (result.apply?.id === operation.id && ["complete", "partial", "interrupted"].includes(result.apply.status)) {
+    if (result.apply?.id === operation.id && ["complete", "partial", "interrupted"].includes(result.apply.status)) {
       operation = null;
       data.waiting = false;
       data.busy = false;
@@ -247,25 +247,22 @@ function pageHooks() {
     }
   }
 
-  function confirmOperation(type) {
-    if (!alive || !data.ready || data.isBusy || data.dirty || data.conflict) return;
-    if (type === "apply" ? !data.pendingCount : !data.restartSupported || !!data.pendingCount) return;
+  function confirmApply() {
+    if (!alive || !data.ready || data.isBusy || data.dirty || data.conflict || !data.pendingCount) return;
     const revision = data.batchRevision;
     const bootId = data.bootId;
     const paths = data.files.filter((file) => file.pending);
     app.modals.confirm(
-      type === "apply"
-        ? t.div(
-            null,
-            t.p(null, "Apply all " + paths.length + " saved changes to pb_hooks?"),
-            t.ul(
-              { className: "txt-left" },
-              paths.map((file) => t.li(null, file.pending + ": " + file.path)),
-            ),
-            t.p(null, data.restartSupported ? "PocketBase may restart automatically when its file monitor detects these changes." : "Restart PocketBase externally after applying to load the changes."),
-            t.p(null, "If the batch is interrupted, review its progress and apply the remaining drafts again."),
-          )
-        : "Restart PocketBase now? Connections will briefly close while hooks are loaded.",
+      t.div(
+        null,
+        t.p(null, "Apply all " + paths.length + " saved changes to pb_hooks?"),
+        t.ul(
+          { className: "txt-left" },
+          paths.map((file) => t.li(null, file.pending + ": " + file.path)),
+        ),
+        t.p(null, "On Linux, PocketBase may restart automatically when its file monitor detects these changes. If it does not, restart the instance externally after applying all drafts to load the changes."),
+        t.p(null, "If the batch is interrupted, review its progress and apply the remaining drafts again."),
+      ),
       async () => {
         if (!alive || data.isBusy || data.dirty || data.conflict) return;
         if (data.batchRevision !== revision || data.bootId !== bootId) {
@@ -277,15 +274,15 @@ function pageHooks() {
         data.waiting = true;
         data.error = "";
         data.listError = "";
-        operation = { type, id: app.utils.randomString(32), bootId, deadline: Date.now() + 60000 };
+        operation = { id: app.utils.randomString(32), deadline: Date.now() + 60000 };
         try {
-          const result = await app.pb.send(hooksApi + "/" + type, {
+          const result = await app.pb.send(hooksApi + "/apply", {
             method: "POST",
             requestKey: requestKeys.write,
-            body: { confirm: true, revision, bootId, requestId: operation.id },
+            body: { confirm: true, revision, requestId: operation.id },
             signal: AbortSignal.timeout(15000),
           });
-          if (isCurrent(token) && type === "apply") completeOperation(result);
+          if (isCurrent(token)) completeOperation(result);
         } catch (err) {
           if (isCurrent(token) && [400, 401, 403, 409, 413, 423].includes(err?.status)) {
             operation = null;
@@ -300,7 +297,7 @@ function pageHooks() {
         }
       },
       null,
-      { className: type === "apply" ? "lg" : "sm", yesButton: type === "apply" ? "Apply changes" : "Restart PocketBase", noButton: "Cancel" },
+      { className: "lg", yesButton: "Apply changes", noButton: "Cancel" },
     );
   }
 
@@ -484,6 +481,35 @@ function pageHooks() {
     } else { refresh(); }
   }
 
+  async function setFileHidden(path, hidden) {
+    if (!isCurrent(generation) || !data.ready || data.isBusy || !path) return;
+    const token = ++generation;
+    cancelReads();
+    data.busy = true;
+    data.error = "";
+    try {
+      const result = await app.pb.send(hooksApi + "/visibility", {
+        method: "POST",
+        body: { path, hidden },
+        requestKey: requestKeys.write,
+      });
+      if (isCurrent(token)) {
+        acceptStatus(result);
+        data.files = data.files.map((file) => (file.path === path ? { ...file, hidden } : file));
+        if (!hidden) data.hiddenFiles = data.hiddenFiles.filter((file) => file.path !== path);
+        if (hidden && data.path === path) clearEditor();
+        app.toasts.success(hidden ? "Hook hidden. Show it again in Settings > Hooks." : "Hook visibility restored.");
+      }
+    } catch (err) {
+      if (isCurrent(token)) showError(err);
+    } finally {
+      if (alive && app.pb.authStore.record?.id === owner) {
+        data.busy = false;
+        refresh();
+      }
+    }
+  }
+
   function onKeyDown(event) {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
       event.preventDefault();
@@ -491,26 +517,102 @@ function pageHooks() {
     }
   }
 
-  return t.div(
-    {
-      pbEvent: "pageHooksManager",
-      className: "page",
-      onmount: () => {
-        refresh();
-        intervalId = setInterval(() => refresh(), 3000);
-        document.addEventListener("visibilitychange", onVisibilityChange);
-        window.addEventListener("keydown", onKeyDown);
-      },
-      onunmount: () => {
-        rememberDraft();
-        alive = false;
-        ++generation;
-        clearInterval(intervalId);
-        Object.values(requestKeys).forEach((key) => app.pb.cancelRequest(key));
-        document.removeEventListener("visibilitychange", onVisibilityChange);
-        window.removeEventListener("keydown", onKeyDown);
-      },
+  const pageProps = {
+    pbEvent: settings ? "pageHooksSettings" : "pageHooksManager",
+    className: "page",
+    onmount: () => {
+      refresh();
+      intervalId = setInterval(() => refresh(), 3000);
+      document.addEventListener("visibilitychange", onVisibilityChange);
+      if (!settings) window.addEventListener("keydown", onKeyDown);
     },
+    onunmount: () => {
+      rememberDraft();
+      alive = false;
+      ++generation;
+      clearInterval(intervalId);
+      Object.values(requestKeys).forEach((key) => app.pb.cancelRequest(key));
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("keydown", onKeyDown);
+    },
+  };
+
+  if (settings) {
+    return t.div(
+      pageProps,
+      app.components.pageSidebar(
+        { pbEvent: "settingsSidebar", className: "settings-sidebar" },
+        t.nav({ className: "sidebar-content scrollable" }, () =>
+          Object.entries(app.store.settingsNavGroups).map(([group, links]) =>
+            t.details({ className: "nav-group", "html-data-group": group, open: true }, t.summary({ tabIndex: -1, onfocusout: () => false, onclick: () => false, onkeyup: () => false }, group), () =>
+              links.map((link) =>
+                t.a(
+                  {
+                    href: () => link.href,
+                    target: () => (link.href.startsWith("#/") ? undefined : "_blank"),
+                    rel: () => (link.href.startsWith("#/") ? undefined : "noopener noreferrer"),
+                    className: (el) => "nav-item " + (link.isActive?.(el) || app.utils.isActivePath(link.href, false) ? "active" : ""),
+                  },
+                  () => (link.icon ? t.i({ className: link.icon, ariaHidden: true }) : null),
+                  t.span({ className: "txt" }, () => link.label),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+      t.div(
+        { className: "page-content full-height" },
+        t.header({ className: "page-header" }, t.nav({ className: "breadcrumbs" }, t.div({ className: "breadcrumb-item" }, "Settings"), t.div({ className: "breadcrumb-item" }, "Hooks"))),
+        t.div(
+          { className: "wrapper m-b-base" },
+          t.div(
+            { className: "flex gap-10 m-b-sm" },
+            t.div({ className: "txt-lg" }, "Hidden hooks"),
+            app.components.refreshButton({
+              className: "btn sm transparent secondary circle tooltip-bottom",
+              tooltip: "Refresh hidden hooks",
+              disabled: () => data.isBusy || data.refreshing,
+              onclick: () => refresh(true),
+            }),
+          ),
+          t.div({ className: "alert danger m-b-sm", hidden: () => !data.listError }, () => data.listError),
+          t.div({ className: "alert danger m-b-sm", hidden: () => !data.error }, () => data.error),
+          t.div(
+            { className: "list" },
+            t.div({ className: "list-content" }, t.div({ className: "list-item", hidden: () => data.ready || !data.refreshing }, t.div({ className: "skeleton-loader" })), t.div({ className: "list-item", hidden: () => !data.ready || !!data.hiddenFiles.length }, t.div({ className: "content block txt-hint" }, "No hidden hooks found.")), () =>
+              data.hiddenFiles.map((file) =>
+                t.div(
+                  { className: "list-item" },
+                  t.i({ className: "ri-file-code-line", ariaHidden: true }),
+                  t.div({ className: "content" }, t.span({ className: "txt-ellipsis", title: file.path }, file.path), !file.missing ? t.small({ className: "txt-hint txt-nowrap" }, "(" + app.utils.formattedFileSize(file.size) + ")") : null, file.pending ? t.span({ className: "label sm warning" }, file.pending) : null, file.missing ? t.small({ className: "txt-hint" }, "File no longer exists") : null),
+                  t.nav(
+                    { className: "actions" },
+                    t.button(
+                      {
+                        type: "button",
+                        className: "btn sm circle secondary transparent",
+                        ariaLabel: app.attrs.tooltip("Show"),
+                        disabled: () => data.isBusy,
+                        onclick: () => setFileHidden(file.path, false),
+                      },
+                      t.i({ className: "ri-eye-line", ariaHidden: true }),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            t.div({ className: "list-item" }, t.a({ href: "#/hooks", className: "btn secondary block" }, t.i({ className: "ri-code-box-line", ariaHidden: true }), t.span({ className: "txt" }, "Manage hooks"))),
+          ),
+          t.p({ className: "txt-sm txt-hint m-t-sm" }, "Hidden files keep running normally. Show a file to return it to the Hooks list."),
+        ),
+        t.footer({ className: "page-footer" }, app.components.credits()),
+      ),
+    );
+  }
+
+  return t.div(
+    pageProps,
     app.components.pageSidebar(
       { className: "collections-sidebar" },
       t.div(
@@ -599,6 +701,28 @@ function pageHooks() {
             },
             t.i({ className: "ri-file-copy-line", ariaHidden: true }),
           ),
+          t.button(
+            {
+              type: "button",
+              className: "btn transparent secondary circle",
+              hidden: () => !data.path || data.isNew || data.currentHidden,
+              ariaLabel: app.attrs.tooltip("Hide"),
+              disabled: () => data.isBusy || !data.ready,
+              onclick: () => confirmDiscard(() => setFileHidden(data.path, true)),
+            },
+            t.i({ className: "ri-eye-off-line", ariaHidden: true }),
+          ),
+          t.button(
+            {
+              type: "button",
+              className: "btn transparent warning circle",
+              hidden: () => !data.pending,
+              ariaLabel: app.attrs.tooltip("Discard saved draft"),
+              disabled: () => data.isBusy || data.conflict,
+              onclick: discardSavedDraft,
+            },
+            t.i({ className: "ri-arrow-go-back-line", ariaHidden: true }),
+          ),
         ),
         t.div(
           { className: "page-header-primary-btns" },
@@ -608,21 +732,10 @@ function pageHooks() {
               className: "btn outline",
               disabled: () => !data.ready || data.isBusy || data.dirty || data.conflict || !data.pendingCount,
               title: "Save or discard unsaved editing before applying the saved drafts",
-              onclick: () => confirmOperation("apply"),
+              onclick: confirmApply,
             },
             t.i({ className: "ri-check-line", ariaHidden: true }),
             t.span({ className: "txt" }, () => "Apply changes (" + data.pendingCount + ")"),
-          ),
-          t.button(
-            {
-              type: "button",
-              className: "btn outline",
-              hidden: () => !data.restartSupported,
-              disabled: () => !data.ready || data.isBusy || data.dirty || data.conflict || !!data.pendingCount,
-              onclick: () => confirmOperation("restart"),
-            },
-            t.i({ className: "ri-restart-line", ariaHidden: true }),
-            t.span({ className: "txt" }, "Restart PocketBase"),
           ),
           t.button(
             {
@@ -648,11 +761,6 @@ function pageHooks() {
           ),
         ),
       ),
-      t.div(
-        { className: "alert info m-b-sm", hidden: () => !data.pendingCount || data.waiting },
-        t.p({ className: "txt-bold" }, () => data.pendingCount + " saved change(s) pending"),
-        t.p(null, "Saving a draft leaves pb_hooks unchanged. Apply changes writes all saved drafts to the active hooks directory."),
-      ),
       t.div({ className: "alert info m-b-sm", hidden: () => !data.waiting }, t.p({ className: "txt-bold" }, "Waiting for confirmation"), t.p(null, "PocketBase may briefly disconnect. The panel will check the saved operation status when the server is available.")),
       t.div(
         { className: "alert warning m-b-sm", hidden: () => !["partial", "interrupted"].includes(data.applyReport?.status) },
@@ -661,11 +769,7 @@ function pageHooks() {
         t.p(null, () => data.applyReport?.error || "Review the files and use Apply changes again to continue with the remaining drafts."),
         t.p(null, () => (data.applyReport?.current ? "Last operation: " + data.applyReport.current : "")),
       ),
-      t.div(
-        { className: "alert info m-b-sm", hidden: () => !data.restartRequired },
-        t.p({ className: "txt-bold" }, "Hook files applied"),
-        t.p(null, () => (data.restartSupported ? "If PocketBase has not restarted automatically, use Restart PocketBase after applying all drafts to load the changes." : "Restart PocketBase externally to load the changes. On Windows, this plugin does not restart the instance.")),
-      ),
+      t.div({ className: "alert info m-b-sm", hidden: () => !data.restartRequired }, t.p({ className: "txt-bold" }, "Hook files applied"), t.p(null, "If PocketBase has not restarted automatically, restart the instance externally after applying all drafts to load the changes.")),
       t.div(
         { className: "alert danger m-b-sm", hidden: () => !data.listError },
         t.p(null, () => data.listError),
@@ -750,6 +854,7 @@ function pageHooks() {
             "Content",
             t.span({ className: "label sm warning", hidden: () => !data.dirty }, "Unsaved changes"),
             t.span({ className: "label sm", hidden: () => !data.pending }, () => (data.pending === "delete" ? "Removal pending" : "Saved draft")),
+            t.span({ className: "label sm", hidden: () => !data.currentHidden }, "Hidden"),
           ),
           t.textarea({
             id: uniqueId + "_content",
@@ -780,29 +885,6 @@ function pageHooks() {
             () => app.utils.formattedFileSize(data.size),
           ),
         ),
-        t.div(
-          { className: "flex flex-wrap gap-sm m-b-sm", style: "flex: 0 0 auto;", hidden: () => !data.isNew && !data.pending },
-          t.button(
-            {
-              type: "button",
-              className: "btn sm secondary",
-              hidden: () => !data.isNew,
-              disabled: () => data.isBusy,
-              onclick: () => confirmDiscard(() => clearEditor(true)),
-            },
-            "Cancel new file",
-          ),
-          t.button(
-            {
-              type: "button",
-              className: "btn sm outline warning",
-              hidden: () => !data.pending,
-              disabled: () => data.isBusy || data.conflict,
-              onclick: discardSavedDraft,
-            },
-            "Discard saved draft",
-          ),
-        ),
       ),
       t.div(
         {
@@ -813,9 +895,10 @@ function pageHooks() {
         },
         t.span({ className: "loader" }),
       ),
+      t.div({ className: "txt-center m-auto", hidden: () => !data.ready || data.hasFile || !data.files.length || !!data.visibleFiles.length }, t.p({ className: "txt-hint" }, "All hook files are hidden."), t.a({ href: "#/settings/hooks", className: "btn secondary" }, "Show hidden hooks")),
       t.footer(
         { className: "page-footer" },
-        t.span({ className: "txt" }, "Total: ", () => data.files.length),
+        t.span({ className: "txt" }, "Total: ", () => data.visibleFiles.length),
         app.components.credits(),
       ),
     ),
@@ -832,3 +915,6 @@ app.store.headerLinks.splice(
   },
 );
 app.routes.superuserOnly("#/hooks", pageHooks);
+const hooksSettingsGroup = Object.values(app.store.settingsNavGroups).find((links) => links.some((link) => link.href === "#/settings/backups"));
+hooksSettingsGroup.splice(hooksSettingsGroup.findIndex((link) => link.href === "#/settings/backups") + 1, 0, { href: "#/settings/hooks", icon: "ri-code-box-line", label: "Hooks" });
+app.routes.superuserOnly("#/settings/hooks", pageHooks);
