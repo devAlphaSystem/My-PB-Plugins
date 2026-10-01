@@ -8,7 +8,9 @@ let loading = false;
 let nextCheckAt = 0;
 let timer;
 
-function authenticated() { return app.pb.authStore.isValid && app.pb.authStore.record?.collectionName === "_superusers"; }
+function authenticated() {
+  return app.pb.authStore.isValid && app.pb.authStore.record?.collectionName === "_superusers";
+}
 
 function parseVersion(value) {
   if (typeof value !== "string" || value.length > 100) return null;
@@ -83,7 +85,9 @@ async function checkForUpdates() {
   } finally {
     loading = false;
     if (token !== generation) checkForUpdates();
-    else if (authenticated() && !document.hidden && navigator.onLine) { timer = setTimeout(checkForUpdates, Math.max(1000, nextCheckAt - Date.now())); }
+    else if (authenticated() && !document.hidden && navigator.onLine) {
+      timer = setTimeout(checkForUpdates, Math.max(1000, nextCheckAt - Date.now()));
+    }
   }
 }
 

@@ -10,12 +10,13 @@
 
     usage() {
         printf '%s\n' \
-            'Usage: bash install.sh [--hooks-manager] [--cron-manager] [--update-notifier]' \
+            'Usage: bash install.sh [--hooks-manager] [--cron-manager] [--update-notifier] [--collections-live]' \
             '' \
             'Select one or more plugins to install or update:' \
             '  --hooks-manager    Install Hooks Manager.' \
             '  --cron-manager     Install Cron Manager.' \
             '  --update-notifier  Install Update Notifier.' \
+            '  --collections-live Install Collections Live.' \
             '  --help, -h         Show this help without installing.'
     }
 
@@ -26,6 +27,7 @@
             --hooks-manager) package='Hooks Manager' ;;
             --cron-manager) package='Cron Manager' ;;
             --update-notifier) package='Update Notifier' ;;
+            --collections-live) package='Collections Live' ;;
             --help|-h) show_help=true; continue ;;
             *) usage >&2; fail "Unknown argument: $argument." ;;
         esac

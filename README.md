@@ -60,21 +60,38 @@ or
 bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/devAlphaSystem/My-PB-Plugins/main/install.sh | bash -s -- "$@"' -- --update-notifier
 ```
 
-After installation, start PocketBase and reload the admin dashboard with **Ctrl+Shift+R**.
+## [Collections Live](Collections%20Live/README.md)
+
+Keeps the **Collections** record list and its total current using PocketBase realtime events. Changes update the affected rows while preserving the table, loaded records, and selection.
+
+### One-command installation on Linux
+
+```bash
+bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/devAlphaSystem/My-PB-Plugins/main/Collections%20Live/install.sh | bash'
+```
+
+or
+
+```bash
+bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/devAlphaSystem/My-PB-Plugins/main/install.sh | bash -s -- "$@"' -- --collections-live
+```
+
+After installation, start PocketBase and reload the admin dashboard with **Ctrl+Shift+R**. The new plugin's download commands become available after its package is published to `main`.
 
 ## Install multiple plugins on Linux
 
-Use the root `install.sh` to install or update any combination of plugins in one command. To select all three:
+Use the root `install.sh` to install or update any combination of plugins in one command. To select all four:
 
 ```bash
-bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/devAlphaSystem/My-PB-Plugins/main/install.sh | bash -s -- "$@"' -- --hooks-manager --cron-manager --update-notifier
+bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/devAlphaSystem/My-PB-Plugins/main/install.sh | bash -s -- "$@"' -- --hooks-manager --cron-manager --update-notifier --collections-live
 ```
 
-| Argument            | Plugin          |
-| ------------------- | --------------- |
-| `--hooks-manager`   | Hooks Manager   |
-| `--cron-manager`    | Cron Manager    |
-| `--update-notifier` | Update Notifier |
+| Argument             | Plugin           |
+| -------------------- | ---------------- |
+| `--hooks-manager`    | Hooks Manager    |
+| `--cron-manager`     | Cron Manager     |
+| `--update-notifier`  | Update Notifier  |
+| `--collections-live` | Collections Live |
 
 Keep the `--` after the closing quote: it lets Bash forward all following plugin flags to the installer. Use `--help` instead of plugin flags to display usage without installing.
 

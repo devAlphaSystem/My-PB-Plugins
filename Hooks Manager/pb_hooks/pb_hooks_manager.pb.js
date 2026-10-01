@@ -14,13 +14,41 @@ $app.onServe().bindFunc(function (e) {
 
 routerUse(function (e) {
   const path = e.request.url.path;
-  if (path === "/_/extensions.js" || path.indexOf("/_/extensions/pb-hooks-manager/") === 0) { e.response.header().set("Cache-Control", "no-store"); }
+  if (path === "/_/extensions.js" || path.indexOf("/_/extensions/pb-hooks-manager/") === 0) {
+    e.response.header().set("Cache-Control", "no-store");
+  }
   return e.next();
 });
 
-routerAdd("GET", "/api/pb-hooks-manager/files", function (e) { return require(__hooks + "/pb_hooks_manager/api.js").list(e); }, $apis.requireSuperuserAuth(), $apis.skipSuccessActivityLog());
+routerAdd(
+  "GET",
+  "/api/pb-hooks-manager/files",
+  function (e) {
+    return require(__hooks + "/pb_hooks_manager/api.js").list(e);
+  },
+  $apis.requireSuperuserAuth(),
+  $apis.skipSuccessActivityLog(),
+);
 
-routerAdd("GET", "/api/pb-hooks-manager/status", function (e) { return require(__hooks + "/pb_hooks_manager/api.js").status(e); }, $apis.requireSuperuserAuth(), $apis.skipSuccessActivityLog());
+routerAdd(
+  "GET",
+  "/api/pb-hooks-manager/status",
+  function (e) {
+    return require(__hooks + "/pb_hooks_manager/api.js").status(e);
+  },
+  $apis.requireSuperuserAuth(),
+  $apis.skipSuccessActivityLog(),
+);
+
+routerAdd(
+  "POST",
+  "/api/pb-hooks-manager/import",
+  function (e) {
+    return require(__hooks + "/pb_hooks_manager/api.js").import(e);
+  },
+  $apis.requireSuperuserAuth(),
+  $apis.bodyLimit(6 * 8 * 1024 * 1024 + 256 * 1024),
+);
 
 ["apply", "discard", "visibility", "activation"].forEach(function (action) {
   routerAdd(
@@ -38,5 +66,12 @@ routerAdd("GET", "/api/pb-hooks-manager/status", function (e) { return require(_
 ["GET", "POST", "PUT", "DELETE"].forEach(function (method) {
   const middlewares = [$apis.requireSuperuserAuth(), $apis.bodyLimit(7 * 1024 * 1024)];
   if (method === "GET") middlewares.push($apis.skipSuccessActivityLog());
-  routerAdd(method, "/api/pb-hooks-manager/file", function (e) { return require(__hooks + "/pb_hooks_manager/api.js").file(e); }, ...middlewares);
+  routerAdd(
+    method,
+    "/api/pb-hooks-manager/file",
+    function (e) {
+      return require(__hooks + "/pb_hooks_manager/api.js").file(e);
+    },
+    ...middlewares,
+  );
 });

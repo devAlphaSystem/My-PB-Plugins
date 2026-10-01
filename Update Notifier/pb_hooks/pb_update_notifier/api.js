@@ -60,5 +60,7 @@ module.exports.latest = function (e) {
       checkedAt: cache.checkedAt,
       retryAfterSeconds: retryAfterSeconds,
     });
-  } finally { e.app.store().set(PREFIX + "busy", false); }
+  } finally {
+    e.app.store().set(PREFIX + "busy", false);
+  }
 };

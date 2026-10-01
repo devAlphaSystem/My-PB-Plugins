@@ -6,10 +6,16 @@ const MAX_JSON_BYTES = 12 * 1024 * 1024;
 const ID_PATTERN = /^[a-z0-9]{20}$/;
 const REVISION_PATTERN = /^[a-zA-Z0-9]{32}$/;
 
-function fail(status, message) { throw new ApiError(status, message); }
+function fail(status, message) {
+  throw new ApiError(status, message);
+}
 
-function nativeId(id) { return PREFIX + id; }
-function runningKey(id) { return PREFIX + "running." + id; }
+function nativeId(id) {
+  return PREFIX + id;
+}
+function runningKey(id) {
+  return PREFIX + "running." + id;
+}
 
 function withStorage(app, callback) {
   let acquired = false;
@@ -29,9 +35,20 @@ function withStorage(app, callback) {
   try {
     parent = $os.openRoot(app.dataDir());
     const name = "pb_cron_manager";
-    if (!parent.fs().readDir(".").some(function (entry) { return entry.name() === name; })) { parent.mkdir(name, 0o700); }
+    if (
+      !parent
+        .fs()
+        .readDir(".")
+        .some(function (entry) {
+          return entry.name() === name;
+        })
+    ) {
+      parent.mkdir(name, 0o700);
+    }
     const info = parent.lstat(name);
-    if (!info.isDir() || info.mode() & (1 << 27)) { fail(500, "Cron Manager storage must be a real directory, not a symbolic link."); }
+    if (!info.isDir() || info.mode() & (1 << 27)) {
+      fail(500, "Cron Manager storage must be a real directory, not a symbolic link.");
+    }
     root = parent.openRoot(name);
     return callback({ app: app, root: root });
   } catch (err) {
@@ -43,13 +60,23 @@ function withStorage(app, callback) {
     } finally {
       try {
         if (parent) parent.close();
-      } finally { app.store().set(PREFIX + "storageBusy", false); }
+      } finally {
+        app.store().set(PREFIX + "storageBusy", false);
+      }
     }
   }
 }
 
 function readJson(context, name, empty) {
-  if (!context.root.fs().readDir(".").some(function (entry) { return entry.name() === name; })) return empty;
+  if (
+    !context.root
+      .fs()
+      .readDir(".")
+      .some(function (entry) {
+        return entry.name() === name;
+      })
+  )
+    return empty;
   const info = context.root.lstat(name);
   if (!info.mode().isRegular() || info.size() > MAX_JSON_BYTES) fail(500, "Cron Manager storage contains an invalid or oversized file.");
   const file = context.root.open(name);
@@ -57,7 +84,9 @@ function readJson(context, name, empty) {
     const bytes = toBytes(file, MAX_JSON_BYTES + 1);
     if (bytes.length > MAX_JSON_BYTES) fail(500, "Cron Manager storage exceeds its size limit.");
     return JSON.parse(toString(bytes));
-  } finally { file.close(); }
+  } finally {
+    file.close();
+  }
 }
 
 function writeJson(context, name, value) {
@@ -80,14 +109,18 @@ function writeJson(context, name, value) {
       if (file) file.close();
     } finally {
       if (!committed) {
-        try { context.root.remove(temporary); } catch (_) {}
+        try {
+          context.root.remove(temporary);
+        } catch (_) {}
       }
     }
   }
 }
 
 function validateConfig(value) {
-  if (!value || typeof value.name !== "string" || !value.name.trim() || value.name.length > 120 || typeof value.expression !== "string" || !value.expression.trim() || value.expression.length > 128 || typeof value.code !== "string" || !value.code.trim() || toBytes(value.code).length > MAX_CODE_BYTES || value.code.indexOf("\0") !== -1 || typeof value.enabled !== "boolean") { fail(400, "Provide a name (up to 120 characters), cron expression, enabled state, and JavaScript code (up to 32 KiB)."); }
+  if (!value || typeof value.name !== "string" || !value.name.trim() || value.name.length > 120 || typeof value.expression !== "string" || !value.expression.trim() || value.expression.length > 128 || typeof value.code !== "string" || !value.code.trim() || toBytes(value.code).length > MAX_CODE_BYTES || value.code.indexOf("\0") !== -1 || typeof value.enabled !== "boolean") {
+    fail(400, "Provide a name (up to 120 characters), cron expression, enabled state, and JavaScript code (up to 32 KiB).");
+  }
   return {
     name: value.name.trim(),
     expression: value.expression.trim(),
@@ -97,7 +130,11 @@ function validateConfig(value) {
 }
 
 function compileCode(code) {
-  try { return new Function("$app", "job", "log", '"use strict";\n' + code); } catch (_) { fail(400, "The job contains invalid JavaScript. Use a synchronous function body without imports or top-level await."); }
+  try {
+    return new Function("$app", "job", "log", '"use strict";\n' + code);
+  } catch (_) {
+    fail(400, "The job contains invalid JavaScript. Use a synchronous function body without imports or top-level await.");
+  }
 }
 
 function registry(context) {
@@ -114,7 +151,9 @@ function registry(context) {
         created: job.created,
         updated: job.updated,
       });
-    } catch (_) { fail(500, "A saved job has invalid fields. Check jobs.json before continuing."); }
+    } catch (_) {
+      fail(500, "A saved job has invalid fields. Check jobs.json before continuing.");
+    }
   });
   return state;
 }
@@ -124,7 +163,19 @@ function history(context) {
   if (state.version !== 1 || !Array.isArray(state.items) || state.items.length > HISTORY_LIMIT) fail(500, "The saved execution history is invalid.");
   let changed = false;
   state.items.forEach(function (run) {
-    if (!run || !REVISION_PATTERN.test(run.id) || !ID_PATTERN.test(run.jobId) || !["running", "success", "error", "interrupted", "unconfirmed", "skipped"].includes(run.status) || !Array.isArray(run.logs) || run.logs.length > 10 || !run.logs.every(function (line) { return typeof line === "string" && line.length <= 256; })) { fail(500, "The saved execution history contains an invalid entry."); }
+    if (
+      !run ||
+      !REVISION_PATTERN.test(run.id) ||
+      !ID_PATTERN.test(run.jobId) ||
+      !["running", "success", "error", "interrupted", "unconfirmed", "skipped"].includes(run.status) ||
+      !Array.isArray(run.logs) ||
+      run.logs.length > 10 ||
+      !run.logs.every(function (line) {
+        return typeof line === "string" && line.length <= 256;
+      })
+    ) {
+      fail(500, "The saved execution history contains an invalid entry.");
+    }
     if (run.status === "running") {
       if (run.bootId !== context.app.store().get(PREFIX + "bootId")) {
         run.status = "interrupted";
@@ -143,7 +194,9 @@ function history(context) {
 
 function saveHistory(context, state) {
   while (state.items.length > HISTORY_LIMIT) {
-    const index = state.items.findIndex(function (item) { return item.status !== "running"; });
+    const index = state.items.findIndex(function (item) {
+      return item.status !== "running";
+    });
     if (index === -1) fail(503, "The execution history has too many running jobs.");
     state.items.splice(index, 1);
   }
@@ -152,7 +205,9 @@ function saveHistory(context, state) {
 
 function findJob(state, id) {
   if (typeof id !== "string" || !ID_PATTERN.test(id)) fail(404, "Cron job not found.");
-  const job = state.jobs.find(function (item) { return item.id === id; });
+  const job = state.jobs.find(function (item) {
+    return item.id === id;
+  });
   if (!job) fail(404, "Cron job not found.");
   return job;
 }
@@ -163,7 +218,11 @@ function checkRevision(job, revision) {
 
 function register(job) {
   const handler = "function () { require(__hooks + '/pb_cron_manager/api.js').execute($app, " + JSON.stringify(job.id) + ", " + JSON.stringify(job.revision) + "); }";
-  try { cronAdd(nativeId(job.id), job.expression, handler); } catch (_) { fail(400, "Invalid cron expression. Use five numeric fields or a supported PocketBase cron macro."); }
+  try {
+    cronAdd(nativeId(job.id), job.expression, handler);
+  } catch (_) {
+    fail(400, "Invalid cron expression. Use five numeric fields or a supported PocketBase cron macro.");
+  }
   if (!job.enabled) cronRemove(nativeId(job.id));
 }
 
@@ -182,7 +241,9 @@ function commitJob(context, state, job, previous) {
   register(job);
   if (previous) state.jobs[state.jobs.indexOf(previous)] = job;
   else state.jobs.push(job);
-  try { writeJson(context, "jobs.json", state); } catch (err) {
+  try {
+    writeJson(context, "jobs.json", state);
+  } catch (err) {
     restoreRegistration(context.app, previous, job.id);
     throw err;
   }
@@ -194,7 +255,13 @@ function viewJob(app, job, records, includeCode) {
   const result = Object.assign({}, job, {
     nativeId: nativeId(job.id),
     running: !!app.store().get(runningKey(job.id)),
-    lastRun: records.slice().reverse().find(function (run) { return run.jobId === job.id; }) || null,
+    lastRun:
+      records
+        .slice()
+        .reverse()
+        .find(function (run) {
+          return run.jobId === job.id;
+        }) || null,
     registrationError: app.store().get(PREFIX + "registrationError." + job.id) || "",
   });
   if (!includeCode) delete result.code;
@@ -223,7 +290,13 @@ exports.list = function (e) {
     const state = registry(context);
     const records = history(context).items;
     return {
-      jobs: state.jobs.map(function (job) { return viewJob(e.app, job, records, false); }).sort(function (a, b) { return a.name.localeCompare(b.name); }),
+      jobs: state.jobs
+        .map(function (job) {
+          return viewJob(e.app, job, records, false);
+        })
+        .sort(function (a, b) {
+          return a.name.localeCompare(b.name);
+        }),
       limits: { maxJobs: MAX_JOBS, maxCodeBytes: MAX_CODE_BYTES, historyLimit: HISTORY_LIMIT },
       startupError: e.app.store().get(PREFIX + "startupError") || "",
     };
@@ -232,7 +305,9 @@ exports.list = function (e) {
 };
 
 exports.read = function (e) {
-  const result = withStorage(e.app, function (context) { return viewJob(e.app, findJob(registry(context), e.request.pathValue("id")), history(context).items, true); });
+  const result = withStorage(e.app, function (context) {
+    return viewJob(e.app, findJob(registry(context), e.request.pathValue("id")), history(context).items, true);
+  });
   return e.json(200, result);
 };
 
@@ -247,7 +322,12 @@ exports.save = function (e, create) {
       checkRevision(previous, body.revision);
       if (e.app.store().get(runningKey(previous.id))) fail(409, "Wait for the running job to finish before editing it.");
     } else if (state.jobs.length >= MAX_JOBS) fail(413, "Cron Manager supports up to 50 jobs.");
-    if (state.jobs.some(function (job) { return job !== previous && job.name.toLowerCase() === values.name.toLowerCase(); })) fail(409, "A managed job already uses that name.");
+    if (
+      state.jobs.some(function (job) {
+        return job !== previous && job.name.toLowerCase() === values.name.toLowerCase();
+      })
+    )
+      fail(409, "A managed job already uses that name.");
     const now = new Date().toISOString();
     const job = Object.assign({}, values, {
       id: previous ? previous.id : $security.randomStringWithAlphabet(20, "abcdefghijklmnopqrstuvwxyz0123456789"),
@@ -296,7 +376,13 @@ exports.remove = function (e) {
 exports.history = function (e) {
   const id = e.request.url.query().get("jobId");
   if (id && !ID_PATTERN.test(id)) fail(400, "Invalid job identifier.");
-  const items = withStorage(e.app, function (context) { return history(context).items.filter(function (run) { return !id || run.jobId === id; }).reverse(); });
+  const items = withStorage(e.app, function (context) {
+    return history(context)
+      .items.filter(function (run) {
+        return !id || run.jobId === id;
+      })
+      .reverse();
+  });
   return e.json(200, { items: items, limit: HISTORY_LIMIT });
 };
 
@@ -304,14 +390,18 @@ function beginRun(app, id, revision, trigger, requestId) {
   return withStorage(app, function (context) {
     const records = history(context);
     if (requestId) {
-      const existing = records.items.find(function (run) { return run.id === requestId; });
+      const existing = records.items.find(function (run) {
+        return run.id === requestId;
+      });
       if (existing) {
         if (existing.jobId !== id || existing.trigger !== "manual") fail(409, "This request identifier belongs to another execution.");
         return { run: existing, execute: false };
       }
     }
     const state = registry(context);
-    const job = state.jobs.find(function (item) { return item.id === id; });
+    const job = state.jobs.find(function (item) {
+      return item.id === id;
+    });
     if (trigger === "schedule" && (!job || !job.enabled || job.revision !== revision)) return null;
     if (!job) fail(404, "Cron job not found.");
     checkRevision(job, revision);
@@ -362,17 +452,25 @@ function executeRun(app, ticket) {
     try {
       withStorage(app, function (context) {
         const records = history(context);
-        const index = records.items.findIndex(function (item) { return item.id === run.id && item.jobId === run.jobId; });
+        const index = records.items.findIndex(function (item) {
+          return item.id === run.id && item.jobId === run.jobId;
+        });
         if (index === -1) fail(500, "The execution history entry is missing. Check the saved history before retrying.");
         records.items[index] = run;
         saveHistory(context, records);
       });
-    } finally { app.store().setFunc(runningKey(run.jobId), function (current) { return current === run.id ? "" : current; }); }
+    } finally {
+      app.store().setFunc(runningKey(run.jobId), function (current) {
+        return current === run.id ? "" : current;
+      });
+    }
   }
   return run;
 }
 
-exports.execute = function (app, id, revision) { return executeRun(app, beginRun(app, id, revision, "schedule", null)); };
+exports.execute = function (app, id, revision) {
+  return executeRun(app, beginRun(app, id, revision, "schedule", null));
+};
 
 exports.run = function (e) {
   const body = e.requestInfo().body;

@@ -49,11 +49,17 @@ function managedCrons(list, header, nativeRefresh) {
   const decoratedRows = new WeakMap();
   const extraRows = new Map();
 
-  function current() { return alive && app.pb.authStore.isValid && app.pb.authStore.record?.id === owner; }
+  function current() {
+    return alive && app.pb.authStore.isValid && app.pb.authStore.record?.id === owner;
+  }
 
   async function request(path, options, key) {
     requestKeys.add(key);
-    try { return await app.pb.send(cronApi + path, { ...options, requestKey: key }); } finally { requestKeys.delete(key); }
+    try {
+      return await app.pb.send(cronApi + path, { ...options, requestKey: key });
+    } finally {
+      requestKeys.delete(key);
+    }
   }
 
   function errorMessage(error, mutation = false) {
@@ -128,7 +134,9 @@ function managedCrons(list, header, nativeRefresh) {
       if (action === "run") {
         if (result.run.status === "success") app.toasts.success("Cron completed successfully.");
         else app.toasts.info("Check execution history for this cron's result.");
-      } else { app.toasts.success(action === "delete" ? "Cron deleted." : job.enabled ? "Cron paused." : "Cron resumed."); }
+      } else {
+        app.toasts.success(action === "delete" ? "Cron deleted." : job.enabled ? "Cron paused." : "Cron resumed.");
+      }
     } catch (error) {
       if (!current() || error?.isAbort) return;
       data.actionError = errorMessage(error, true);
@@ -188,15 +196,23 @@ function managedCrons(list, header, nativeRefresh) {
       uncertain: !!draft?.uncertain,
       running: false,
       registrationError: "",
-      get dirty() { return JSON.stringify(form.values) !== form.original; },
-      get codeBytes() { return new TextEncoder().encode(form.values.code).length; },
-      get canSave() { return !form.loading && !form.saving && !form.conflict && !form.uncertain && !form.running && !data.busy && (!form.id || form.dirty || !!form.registrationError) && form.codeBytes <= data.limits.maxCodeBytes; },
+      get dirty() {
+        return JSON.stringify(form.values) !== form.original;
+      },
+      get codeBytes() {
+        return new TextEncoder().encode(form.values.code).length;
+      },
+      get canSave() {
+        return !form.loading && !form.saving && !form.conflict && !form.uncertain && !form.running && !data.busy && (!form.id || form.dirty || !!form.registrationError) && form.codeBytes <= data.limits.maxCodeBytes;
+      },
     });
     let mounted = true;
     let modal;
     let jobWatcher;
 
-    function valid() { return current() && mounted && modal?.isConnected; }
+    function valid() {
+      return current() && mounted && modal?.isConnected;
+    }
     function remember() {
       if (!valid()) return;
       retainCronDraft(
@@ -497,7 +513,9 @@ function managedCrons(list, header, nativeRefresh) {
         if (!current() || !mounted || !modal.isConnected || error?.isAbort || (!notify && error?.status === 423)) return;
         history.error = errorMessage(error);
         if (notify || error?.status === 401) report(error, "Unable to refresh execution history.");
-      } finally { history.loading = false; }
+      } finally {
+        history.loading = false;
+      }
     }
     function visible() {
       if (!document.hidden) load();
@@ -761,7 +779,9 @@ function managedCrons(list, header, nativeRefresh) {
   const historyButton = actionButton("Execution history", "ri-history-line", false, () => openHistory());
   const newCronRow = t.div({ className: "list-item", "html-data-cron-manager-ui": "" }, t.button({ type: "button", className: "btn secondary block", disabled: () => !data.ready || !!data.busy || data.jobs.length >= data.limits.maxJobs, onclick: () => openEditor() }, t.i({ className: "ri-add-line", ariaHidden: true }), t.span({ className: "txt" }, "New cron")));
 
-  function nativeRefreshClicked() { refresh(true); }
+  function nativeRefreshClicked() {
+    refresh(true);
+  }
   function visible() {
     if (!document.hidden) refresh();
   }
@@ -846,7 +866,9 @@ function managedCrons(list, header, nativeRefresh) {
         {
           type: "button",
           className: "btn sm secondary",
-          onclick: () => { data.actionError = ""; },
+          onclick: () => {
+            data.actionError = "";
+          },
         },
         "Dismiss",
       ),
@@ -861,7 +883,9 @@ function managedCrons(list, header, nativeRefresh) {
         type: "search",
         placeholder: "Name, ID or expression...",
         value: () => data.search,
-        oninput: (event) => { data.search = event.target.value; },
+        oninput: (event) => {
+          data.search = event.target.value;
+        },
       }),
     ),
   );

@@ -12,11 +12,15 @@ function warnBeforeUnload(event) {
 function retainDraft(draft) {
   retainedDraft = draft;
   window.removeEventListener("beforeunload", warnBeforeUnload);
-  if (draft) { window.addEventListener("beforeunload", warnBeforeUnload); }
+  if (draft) {
+    window.addEventListener("beforeunload", warnBeforeUnload);
+  }
 }
 
 app.pb.authStore.onChange((_, record) => {
-  if (retainedDraft && retainedDraft.owner !== record?.id) { retainDraft(null); }
+  if (retainedDraft && retainedDraft.owner !== record?.id) {
+    retainDraft(null);
+  }
 });
 
 function pageHooks(route) {
@@ -31,6 +35,7 @@ function pageHooks(route) {
     file: uniqueId + "_file",
     write: uniqueId + "_write",
     status: uniqueId + "_status",
+    import: uniqueId + "_import",
   };
   const draft = !settings && retainedDraft?.owner === owner ? retainedDraft : null;
   const data = store({
@@ -47,9 +52,12 @@ function pageHooks(route) {
     applyReport: null,
     restartRequired: false,
     maxFileSize: 1048576,
+    maxDrafts: 100,
+    maxDraftBytes: 8388608,
     refreshing: false,
     loading: false,
     busy: false,
+    importing: false,
     dragging: false,
     listError: "",
     error: "",
@@ -66,15 +74,33 @@ function pageHooks(route) {
     missing: draft?.missing || false,
     pending: draft?.pending || "",
     diskChanged: draft?.diskChanged || false,
-    get currentPath() { return data.isNew ? [data.directory, data.name].filter(Boolean).join("/") : data.path; },
-    get hasFile() { return data.isNew || !!data.path; },
-    get dirty() { return data.isNew || data.content !== data.originalContent; },
-    get isBusy() { return data.busy || data.loading || data.waiting; },
-    get canImport() { return data.ready && data.hasFile && !data.isBusy && data.pending !== "delete"; },
-    get visibleFiles() { return data.files.filter((file) => !file.hidden); },
-    get currentHidden() { return data.files.some((file) => file.path === data.path && file.hidden); },
-    get currentDisabled() { return data.disabledFiles.some((file) => file.path === data.path) && !data.files.some((file) => file.path === data.path); },
-    get settingsFiles() { return disabledSettings ? data.disabledFiles : data.hiddenFiles; },
+    get currentPath() {
+      return data.isNew ? [data.directory, data.name].filter(Boolean).join("/") : data.path;
+    },
+    get hasFile() {
+      return data.isNew || !!data.path;
+    },
+    get dirty() {
+      return data.isNew || data.content !== data.originalContent;
+    },
+    get isBusy() {
+      return data.busy || data.loading || data.waiting || data.importing;
+    },
+    get canImport() {
+      return data.ready && data.hasFile && !data.isBusy && data.pending !== "delete";
+    },
+    get visibleFiles() {
+      return data.files.filter((file) => !file.hidden);
+    },
+    get currentHidden() {
+      return data.files.some((file) => file.path === data.path && file.hidden);
+    },
+    get currentDisabled() {
+      return data.disabledFiles.some((file) => file.path === data.path) && !data.files.some((file) => file.path === data.path);
+    },
+    get settingsFiles() {
+      return disabledSettings ? data.disabledFiles : data.hiddenFiles;
+    },
     get filteredFiles() {
       const search = data.search.trim().toLowerCase();
       return data.visibleFiles.filter((file) => file.path.toLowerCase().includes(search));
@@ -86,11 +112,16 @@ function pageHooks(route) {
   let intervalId;
   let operation = null;
   let dragDepth = 0;
+  let importModal;
 
-  function isCurrent(token) { return alive && token === generation && app.pb.authStore.record?.id === owner; }
+  function isCurrent(token) {
+    return alive && token === generation && app.pb.authStore.record?.id === owner;
+  }
 
   function rememberDraft() {
-    if (settings || !alive || app.pb.authStore.record?.id !== owner) { return; }
+    if (settings || !alive || app.pb.authStore.record?.id !== owner) {
+      return;
+    }
     retainDraft(
       data.dirty || data.conflict
         ? {
@@ -135,14 +166,18 @@ function pageHooks(route) {
   }
 
   function showError(err, field = "error", notify = true) {
-    if (err?.isAbort || !alive) { return; }
+    if (err?.isAbort || !alive) {
+      return;
+    }
     data[field] = err?.response?.message || err?.message || "Failed to read hook files.";
     app.checkApiError(err, notify);
   }
 
   async function refresh(notify = false, refreshSelected = true) {
     if (data.waiting) return checkOperation();
-    if (!alive || document.hidden || data.isBusy || data.refreshing) { return; }
+    if (!alive || document.hidden || data.isBusy || data.refreshing) {
+      return;
+    }
     const token = generation;
     data.refreshing = true;
     try {
@@ -150,13 +185,25 @@ function pageHooks(route) {
         method: "GET",
         requestKey: requestKeys.list,
       });
-      if (!isCurrent(token)) { return; }
-      if (JSON.stringify(data.files) !== JSON.stringify(result.files)) { data.files = result.files; }
-      if (JSON.stringify(data.hiddenFiles) !== JSON.stringify(result.hiddenFiles)) { data.hiddenFiles = result.hiddenFiles; }
-      if (JSON.stringify(data.disabledFiles) !== JSON.stringify(result.disabledFiles)) { data.disabledFiles = result.disabledFiles; }
-      if (JSON.stringify(data.directories) !== JSON.stringify(result.directories)) { data.directories = result.directories; }
+      if (!isCurrent(token)) {
+        return;
+      }
+      if (JSON.stringify(data.files) !== JSON.stringify(result.files)) {
+        data.files = result.files;
+      }
+      if (JSON.stringify(data.hiddenFiles) !== JSON.stringify(result.hiddenFiles)) {
+        data.hiddenFiles = result.hiddenFiles;
+      }
+      if (JSON.stringify(data.disabledFiles) !== JSON.stringify(result.disabledFiles)) {
+        data.disabledFiles = result.disabledFiles;
+      }
+      if (JSON.stringify(data.directories) !== JSON.stringify(result.directories)) {
+        data.directories = result.directories;
+      }
       acceptStatus(result);
       data.maxFileSize = result.maxFileSize;
+      data.maxDrafts = result.maxDrafts;
+      data.maxDraftBytes = result.maxDraftBytes;
       data.ready = true;
       data.listError = "";
 
@@ -173,7 +220,11 @@ function pageHooks(route) {
       if (data.currentHidden && !data.dirty && !data.conflict) clearEditor();
       if (!data.hasFile) {
         if (data.error && !notify) return;
-        if (data.visibleFiles.length) { await loadFile(data.visibleFiles[0].path); } else if (!data.files.length && !data.disabledFiles.length) { newFile(); }
+        if (data.visibleFiles.length) {
+          await loadFile(data.visibleFiles[0].path);
+        } else if (!data.files.length && !data.disabledFiles.length) {
+          newFile();
+        }
         return;
       }
 
@@ -184,26 +235,36 @@ function pageHooks(route) {
             query: { path: data.path },
             requestKey: requestKeys.file,
           });
-          if (!isCurrent(token)) { return; }
+          if (!isCurrent(token)) {
+            return;
+          }
           data.diskChanged = file.diskChanged;
           if (file.revision !== data.revision || file.pending !== data.pending || data.missing) {
             if (data.dirty || data.conflict) {
               data.conflict = true;
               data.missing = false;
               rememberDraft();
-            } else { acceptFile(file); }
+            } else {
+              acceptFile(file);
+            }
           }
         } catch (err) {
-          if (!isCurrent(token) || err?.isAbort) { return; }
+          if (!isCurrent(token) || err?.isAbort) {
+            return;
+          }
           if (err?.status === 404) {
             data.conflict = true;
             data.missing = true;
             rememberDraft();
-          } else if (notify || ![409, 423].includes(err?.status)) { showError(err, "listError", notify); }
+          } else if (notify || ![409, 423].includes(err?.status)) {
+            showError(err, "listError", notify);
+          }
         }
       }
     } catch (err) {
-      if (isCurrent(token) && (notify || ![409, 423].includes(err?.status))) { showError(err, "listError", notify); }
+      if (isCurrent(token) && (notify || ![409, 423].includes(err?.status))) {
+        showError(err, "listError", notify);
+      }
     } finally {
       if (alive) {
         data.refreshing = false;
@@ -319,13 +380,19 @@ function pageHooks(route) {
   }
 
   function confirmDiscard(action) {
-    if (!alive || data.isBusy) { return; }
-    if (!data.dirty && !data.conflict) { return action(); }
+    if (!alive || data.isBusy) {
+      return;
+    }
+    if (!data.dirty && !data.conflict) {
+      return action();
+    }
     app.modals.confirm("Discard the unsaved draft for " + (data.currentPath || "this new file") + "?", () => (alive && !data.isBusy ? action() : undefined), null, { yesButton: "Discard draft", noButton: "Keep editing" });
   }
 
   async function loadFile(path) {
-    if (!alive || data.isBusy) { return; }
+    if (!alive || data.isBusy) {
+      return;
+    }
     const token = ++generation;
     cancelReads();
     data.loading = true;
@@ -336,11 +403,17 @@ function pageHooks(route) {
         query: { path },
         requestKey: requestKeys.file,
       });
-      if (isCurrent(token)) { acceptFile(file); }
+      if (isCurrent(token)) {
+        acceptFile(file);
+      }
     } catch (err) {
-      if (isCurrent(token)) { showError(err); }
+      if (isCurrent(token)) {
+        showError(err);
+      }
     } finally {
-      if (isCurrent(token)) { data.loading = false; }
+      if (isCurrent(token)) {
+        data.loading = false;
+      }
     }
   }
 
@@ -366,7 +439,9 @@ function pageHooks(route) {
   }
 
   function newFile() {
-    if (!data.ready) { return; }
+    if (!data.ready) {
+      return;
+    }
     confirmDiscard(() => {
       clearEditor();
       data.isNew = true;
@@ -375,9 +450,13 @@ function pageHooks(route) {
   }
 
   function onFileDragOver(event) {
-    if (!event.dataTransfer?.types.includes("Files")) { return; }
+    if (!event.dataTransfer?.types.includes("Files")) {
+      return;
+    }
     event.preventDefault();
-    if (event.type === "dragenter") { ++dragDepth; }
+    if (event.type === "dragenter") {
+      ++dragDepth;
+    }
     data.dragging = isCurrent(generation) && data.canImport && !document.querySelector('.modal[data-modal-state="open"]');
     event.dataTransfer.dropEffect = data.dragging ? "copy" : "none";
   }
@@ -388,43 +467,246 @@ function pageHooks(route) {
   }
 
   function onFileDragLeave(event) {
-    if (!event.dataTransfer?.types.includes("Files")) { return; }
+    if (!event.dataTransfer?.types.includes("Files")) {
+      return;
+    }
     dragDepth = Math.max(0, dragDepth - 1);
-    if (!dragDepth) { resetFileDrag(); }
+    if (!dragDepth) {
+      resetFileDrag();
+    }
+  }
+
+  async function readImportFile(file) {
+    if (file.size > data.maxFileSize) {
+      throw new Error(file.name + " exceeds the " + app.utils.formattedFileSize(data.maxFileSize) + " limit.");
+    }
+    const bytes = await file.arrayBuffer();
+    let content;
+    try {
+      content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+    } catch (_) {
+      throw new Error(file.name + " must use UTF-8 encoding.");
+    }
+    if (content.includes("\u0000")) {
+      throw new Error(file.name + " contains null characters. Only UTF-8 text can be imported.");
+    }
+    return content;
+  }
+
+  function openFolderImport() {
+    if (!alive || !data.ready || data.isBusy || importModal) return;
+    const token = ++generation;
+    cancelReads();
+    resetFileDrag();
+    data.importing = true;
+    const form = store({ folder: "", rows: [], bytes: 0, revision: "", loading: false, saving: false, reviewed: false, error: "" });
+    let selectedFiles = [];
+    let modal;
+    function valid() {
+      return isCurrent(token) && importModal === modal && modal.isConnected;
+    }
+    function report(err) {
+      form.error = err?.response?.message || err?.message || "The folder could not be imported.";
+      app.checkApiError(err);
+    }
+    async function review() {
+      if (!valid() || form.loading || form.saving || !selectedFiles.length) return;
+      form.loading = true;
+      form.reviewed = false;
+      form.error = "";
+      try {
+        const result = await app.pb.send(hooksApi + "/import", { method: "POST", body: { files: selectedFiles }, requestKey: requestKeys.import });
+        if (!valid()) return;
+        form.rows = result.files;
+        form.revision = result.revision;
+        form.reviewed = true;
+      } catch (err) {
+        if (valid() && !err?.isAbort) report(err);
+      } finally {
+        if (valid()) form.loading = false;
+      }
+    }
+    async function selectFolder(event) {
+      const files = Array.from(event.target.files || []);
+      event.target.value = "";
+      if (!valid() || form.loading || form.saving || !files.length) return;
+      form.loading = true;
+      form.reviewed = false;
+      form.rows = [];
+      form.error = "";
+      form.folder = "";
+      form.bytes = 0;
+      selectedFiles = [];
+      try {
+        if (files.length > data.maxDrafts) throw new Error("Select a folder with at most " + data.maxDrafts + " files.");
+        const size = files.reduce((total, file) => total + file.size, 0);
+        if (size > data.maxDraftBytes) throw new Error("The folder exceeds the combined " + app.utils.formattedFileSize(data.maxDraftBytes) + " limit.");
+        const folder = files[0].webkitRelativePath.split("/")[0];
+        const imported = [];
+        for (const file of files) {
+          const parts = file.webkitRelativePath.split("/");
+          if (parts.length < 2 || parts[0] !== folder) throw new Error("Select one folder with its relative file paths. This browser must support folder selection.");
+          const content = await readImportFile(file);
+          if (!valid()) return;
+          imported.push({ path: parts.slice(1).join("/"), content });
+        }
+        selectedFiles = imported;
+        form.folder = folder;
+        form.bytes = size;
+      } catch (err) {
+        if (valid()) report(err);
+      } finally {
+        if (valid()) form.loading = false;
+      }
+      if (valid() && selectedFiles.length) await review();
+    }
+    async function save() {
+      if (!valid() || form.loading || form.saving || !form.reviewed || !form.rows.some((file) => file.operation !== "unchanged")) return;
+      form.saving = true;
+      form.error = "";
+      const revisions = new Map(form.rows.map((file) => [file.path, file.revision]));
+      try {
+        const result = await app.pb.send(hooksApi + "/import", {
+          method: "POST",
+          requestKey: requestKeys.import,
+          body: { confirm: true, revision: form.revision, files: selectedFiles.map((file) => ({ ...file, revision: revisions.get(file.path) })) },
+        });
+        if (!valid()) return;
+        acceptStatus(result);
+        if (data.isNew && !data.directory && !data.name && !data.content && !data.conflict) clearEditor();
+        app.toasts.success(result.savedCount + " draft(s) saved. Use Apply changes to install the folder.");
+        app.modals.close(modal, true);
+      } catch (err) {
+        if (valid()) {
+          form.reviewed = false;
+          if (!err?.status || err?.isAbort) form.error = "Saving could not be confirmed. Review the folder again to check the saved drafts before retrying.";
+          else report(err);
+        }
+      } finally {
+        if (valid()) form.saving = false;
+      }
+    }
+    const importFormId = uniqueId + "_import_form";
+    const folderInputId = uniqueId + "_import_folder";
+    const folderInput = t.input({ id: folderInputId, type: "file", multiple: true, hidden: true, "html-webkitdirectory": "", "html-directory": "", disabled: () => form.loading || form.saving, onchange: selectFolder });
+    modal = t.div(
+      {
+        pbEvent: "hooksImportModal",
+        className: "modal record-upsert-modal",
+        onbeforeclose: (_, forced) => {
+          if (!forced && form.saving) return false;
+        },
+        onafterclose: () => {
+          if (importModal === modal) importModal = null;
+          modal.remove();
+          data.importing = false;
+          if (alive) refresh(true);
+        },
+        onunmount: () => app.pb.cancelRequest(requestKeys.import),
+      },
+      t.header({ className: "modal-header" }, t.div({ className: "grid" }, t.div({ className: "col-12 flex" }, t.h6({ className: "modal-title" }, t.span(null, "Import "), t.strong(null, "hooks"), t.span(null, " folder"))))),
+      t.form(
+        {
+          id: importFormId,
+          className: "modal-content",
+          onsubmit: (event) => {
+            event.preventDefault();
+            save();
+          },
+        },
+        t.div(
+          { className: "grid" },
+          t.div(
+            { className: "col-12" },
+            t.div(
+              { className: "field-list" },
+              t.label({ htmlFor: folderInputId }, t.i({ className: "ri-folder-open-line", ariaHidden: true }), t.span({ className: "txt" }, "Hooks folder")),
+              folderInput,
+              t.output(
+                { className: "field-content" },
+                t.div(
+                  { className: "list", hidden: () => !form.folder },
+                  t.div(
+                    { className: "list-item highlight" },
+                    t.div(
+                      { className: "content gap-10" },
+                      t.i({ className: "ri-folder-line", ariaHidden: true }),
+                      t.strong(null, () => form.folder),
+                      t.small({ className: "txt-hint" }, () => selectedFiles.length + " file(s) · " + app.utils.formattedFileSize(form.bytes)),
+                    ),
+                  ),
+                ),
+                t.button({ type: "button", className: "btn sm secondary block", disabled: () => form.loading || form.saving, onclick: () => folderInput.click() }, t.i({ className: "ri-upload-cloud-line", ariaHidden: true }), t.span({ className: "txt" }, "Choose folder")),
+              ),
+            ),
+            t.div({ className: "field-help" }, "Select pb_hooks or another hooks folder. Its contents are merged into pb_hooks, preserving subfolders."),
+            t.div({ className: "field-help" }, () => "UTF-8 text · Maximum " + app.utils.formattedFileSize(data.maxFileSize) + " per file · " + data.maxDrafts + " files / " + app.utils.formattedFileSize(data.maxDraftBytes) + " of saved drafts."),
+            t.div({ className: "field-help" }, "Supported files: .js, .ts, .mjs, .cjs, .json, .txt, .md, .html and .css."),
+            t.div({ className: "field-help error", hidden: () => !form.error }, () => form.error),
+          ),
+          t.div({ className: "col-12 txt-center", hidden: () => !form.loading, role: "status", ariaLabel: "Reading and reviewing folder" }, t.span({ className: "loader" })),
+          t.div(
+            { className: "col-12", hidden: () => !form.reviewed },
+            t.p({ className: "txt-hint txt-bold" }, "Detected changes"),
+            t.div({ className: "list" }, () => form.rows.map((file) => t.div({ className: "list-item" }, t.span({ className: "label import-change-label " + (file.operation === "create" ? "success" : file.operation === "update" ? "warning" : "") }, file.operation === "create" ? "Added" : file.operation === "update" ? "Changed" : "Unchanged"), t.div({ className: "content" }, t.strong(null, file.path), file.pending && file.operation !== "unchanged" ? t.small({ className: "txt-hint" }, "Replaces saved draft") : null)))),
+            t.div({ className: "field-help" }, "Save drafts first, then Apply changes to install the files. Files absent from this folder are preserved."),
+          ),
+          t.div({ className: "col-12", hidden: () => !data.dirty || (data.isNew && !data.directory && !data.name && !data.content) }, t.div({ className: "alert info" }, t.div({ className: "content" }, t.p(null, "Your unsaved editor content is preserved. Save or discard it before applying the imported drafts.")))),
+        ),
+      ),
+      t.footer({ className: "modal-footer" }, t.button({ type: "button", className: "btn transparent m-r-auto", disabled: () => form.saving, onclick: () => app.modals.close(modal) }, t.span({ className: "txt" }, "Close")), t.button({ type: "button", className: "btn outline", hidden: () => form.reviewed || !form.folder, disabled: () => form.loading || form.saving, onclick: review }, t.span({ className: "txt" }, "Review folder")), t.button({ "html-form": importFormId, type: "submit", className: () => "btn expanded-lg " + (form.saving ? "loading" : ""), disabled: () => !form.reviewed || form.loading || form.saving || !form.rows.some((file) => file.operation !== "unchanged") }, t.span({ className: "txt" }, "Save drafts"))),
+    );
+    importModal = modal;
+    document.body.appendChild(modal);
+    app.modals.open(modal);
   }
 
   async function onFileDrop(event) {
     resetFileDrag();
     const files = event.dataTransfer?.files;
-    if (!files?.length) { return; }
+    if (!files?.length) {
+      return;
+    }
     event.preventDefault();
-    if (!isCurrent(generation) || !data.canImport || document.querySelector('.modal[data-modal-state="open"]')) { return; }
+    if (!isCurrent(generation) || !data.canImport || document.querySelector('.modal[data-modal-state="open"]')) {
+      return;
+    }
     const token = ++generation;
     cancelReads();
     data.loading = true;
     data.error = "";
     try {
-      if (files.length !== 1 || !/\.js$/i.test(files[0].name)) { throw new Error("Drop a single .js file."); }
+      if (files.length !== 1 || !/\.js$/i.test(files[0].name)) {
+        throw new Error("Drop a single .js file.");
+      }
       const file = files[0];
-      if (file.size > data.maxFileSize) { throw new Error("The file exceeds the " + app.utils.formattedFileSize(data.maxFileSize) + " limit."); }
-      const bytes = await file.arrayBuffer();
-      if (!isCurrent(token)) { return; }
-      let content;
-      try { content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes); } catch (_) { throw new Error("The file must use UTF-8 encoding."); }
-      if (content.includes("\u0000")) { throw new Error("Only UTF-8 text without null characters can be edited."); }
-      if (data.isNew) { data.name = file.name; }
+      const content = await readImportFile(file);
+      if (!isCurrent(token)) {
+        return;
+      }
+      if (data.isNew) {
+        data.name = file.name;
+      }
       data.content = content;
       rememberDraft();
     } catch (err) {
-      if (isCurrent(token)) { showError(err); }
+      if (isCurrent(token)) {
+        showError(err);
+      }
     } finally {
-      if (isCurrent(token)) { data.loading = false; }
+      if (isCurrent(token)) {
+        data.loading = false;
+      }
     }
   }
 
   async function saveFile() {
-    if (!alive || data.isBusy || !data.ready || !data.dirty || data.conflict || data.pending === "delete") { return; }
-    if (!document.getElementById(uniqueId + "_form").reportValidity()) { return; }
+    if (!alive || data.isBusy || !data.ready || !data.dirty || data.conflict || data.pending === "delete") {
+      return;
+    }
+    if (!document.getElementById(uniqueId + "_form").reportValidity()) {
+      return;
+    }
     if (new TextEncoder().encode(data.content).length > data.maxFileSize) {
       data.error = "The file exceeds the " + app.utils.formattedFileSize(data.maxFileSize) + " limit.";
       app.toasts.error(data.error);
@@ -465,13 +747,17 @@ function pageHooks(route) {
   }
 
   function confirmDelete() {
-    if (!alive || data.isBusy || !data.ready || data.isNew || !data.path || data.conflict || data.pending === "delete") { return; }
+    if (!alive || data.isBusy || !data.ready || data.isNew || !data.path || data.conflict || data.pending === "delete") {
+      return;
+    }
     const path = data.path;
     const revision = data.revision;
     app.modals.confirm(
       t.div({ className: "txt-center" }, t.h6(null, "Stage deletion of " + path + "?"), t.p(null, "An existing file is removed only when you apply. A new file that exists only as a draft is discarded."), data.dirty ? t.p(null, "Your unsaved draft will also be discarded.") : null),
       async () => {
-        if (!alive || data.isBusy || !data.ready || data.conflict) { return; }
+        if (!alive || data.isBusy || !data.ready || data.conflict) {
+          return;
+        }
         const token = ++generation;
         cancelReads();
         data.busy = true;
@@ -497,7 +783,9 @@ function pageHooks(route) {
             showError(err);
           }
         } finally {
-          if (isCurrent(token)) { data.busy = false; }
+          if (isCurrent(token)) {
+            data.busy = false;
+          }
         }
       },
       null,
@@ -544,7 +832,9 @@ function pageHooks(route) {
       resetFileDrag();
       cancelReads();
       app.pb.cancelRequest(requestKeys.status);
-    } else { refresh(); }
+    } else {
+      refresh();
+    }
   }
 
   async function setFileState(path, value, kind = "hidden", revision = "") {
@@ -588,7 +878,9 @@ function pageHooks(route) {
         if (activation && !err?.status) {
           data.error = "The action could not be confirmed. PocketBase may be restarting. Refresh the lists before trying again.";
           app.toasts.error(data.error);
-        } else { showError(err); }
+        } else {
+          showError(err);
+        }
       }
     } finally {
       if (alive && app.pb.authStore.record?.id === owner) {
@@ -616,7 +908,9 @@ function pageHooks(route) {
   function onKeyDown(event) {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
       event.preventDefault();
-      if (!document.querySelector('.modal[data-modal-state="open"]')) { saveFile(); }
+      if (!document.querySelector('.modal[data-modal-state="open"]')) {
+        saveFile();
+      }
     }
   }
 
@@ -642,6 +936,7 @@ function pageHooks(route) {
       resetFileDrag();
       alive = false;
       ++generation;
+      if (importModal) app.modals.close(importModal, true);
       clearInterval(intervalId);
       Object.values(requestKeys).forEach((key) => app.pb.cancelRequest(key));
       document.removeEventListener("visibilitychange", onVisibilityChange);
@@ -761,7 +1056,9 @@ function pageHooks(route) {
                   title: file.path + " (" + app.utils.formattedFileSize(file.size) + ")",
                   disabled: () => data.isBusy,
                   onclick: () => {
-                    if (data.isNew || file.path !== data.path) { confirmDiscard(() => loadFile(file.path)); }
+                    if (data.isNew || file.path !== data.path) {
+                      confirmDiscard(() => loadFile(file.path));
+                    }
                   },
                 },
                 t.i({ className: "ri-file-code-line", ariaHidden: true }),
@@ -785,6 +1082,7 @@ function pageHooks(route) {
           t.i({ className: "ri-add-line", ariaHidden: true }),
           t.span({ className: "txt" }, "New file"),
         ),
+        t.button({ type: "button", className: "btn outline block m-t-sm", disabled: () => data.isBusy || !data.ready, onclick: openFolderImport }, t.i({ className: "ri-folder-upload-line", ariaHidden: true }), t.span({ className: "txt" }, "Import folder")),
       ),
     ),
     t.div(
@@ -1058,9 +1356,15 @@ app.store.headerLinks.splice(
   },
 );
 app.routes.superuserOnly("#/hooks", pageHooks);
-if (!app.store.settingsNavGroups.Plugins) { app.store.settingsNavGroups.Plugins = []; }
+if (!app.store.settingsNavGroups.Plugins) {
+  app.store.settingsNavGroups.Plugins = [];
+}
 const hooksSettingsGroup = app.store.settingsNavGroups.Plugins;
-if (!hooksSettingsGroup.some((link) => link.href === "#/settings/hooks")) { hooksSettingsGroup.push({ href: "#/settings/hooks", icon: "ri-eye-off-line", label: "Hooks Hidden" }); }
+if (!hooksSettingsGroup.some((link) => link.href === "#/settings/hooks")) {
+  hooksSettingsGroup.push({ href: "#/settings/hooks", icon: "ri-eye-off-line", label: "Hooks Hidden" });
+}
 app.routes.superuserOnly("#/settings/hooks", pageHooks);
-if (!hooksSettingsGroup.some((link) => link.href === "#/settings/hooks-disabled")) { hooksSettingsGroup.push({ href: "#/settings/hooks-disabled", icon: "ri-forbid-line", label: "Hooks Disabled" }); }
+if (!hooksSettingsGroup.some((link) => link.href === "#/settings/hooks-disabled")) {
+  hooksSettingsGroup.push({ href: "#/settings/hooks-disabled", icon: "ri-forbid-line", label: "Hooks Disabled" });
+}
 app.routes.superuserOnly("#/settings/hooks-disabled", pageHooks);
