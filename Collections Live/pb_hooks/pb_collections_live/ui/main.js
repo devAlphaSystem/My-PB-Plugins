@@ -62,7 +62,6 @@ app.components.recordsList = function (propsArg = {}) {
     total: 0,
     hasMore: false,
     status: "connecting",
-    error: "",
     deleting: false,
     get busy() {
       return data.status === "connecting" || data.status === "syncing";
@@ -215,7 +214,6 @@ app.components.recordsList = function (propsArg = {}) {
     if (snapshot.hasMore !== undefined) data.hasMore = snapshot.hasMore;
     loadedLimit = snapshot.limit;
     hasSnapshot = true;
-    data.error = "";
     props.onSuggestResetChange?.(false);
     if (controller.session?.controller === controller) controller.session.state.total = data.total;
     if (anchorId && visible.has(anchorId))
@@ -235,16 +233,14 @@ app.components.recordsList = function (propsArg = {}) {
       data.status = status;
       if (controller.session?.controller === controller) controller.session.state.status = status;
     },
-    onError: (error) => {
+    onError: (error, notify = true) => {
       if (!alive || error?.isAbort) return;
-      data.error = error?.message || "Unable to synchronize records.";
-      if (error?.status === 401) app.checkApiError(error, false);
+      app.checkApiError(error, notify);
     },
   };
 
   function startSync() {
     if (!alive || sync) return;
-    data.error = "";
     syncOptions.setStatus("connecting");
     import(app.pb.buildURL("/_/extensions/pb-collections-live/sync.js"))
       .then(({ createSync }) => {
@@ -472,7 +468,7 @@ app.components.recordsList = function (propsArg = {}) {
           watch(
             () => props.reset,
             (value, old) => {
-              if (resetInitialized && value !== old) sync?.refresh();
+              if (resetInitialized && value !== old) sync ? sync.refresh() : startSync();
               resetInitialized = true;
             },
           ),
@@ -505,7 +501,6 @@ app.components.recordsList = function (propsArg = {}) {
       }
     `,
     }),
-    t.div({ className: "alert alert-danger m-b-sm", hidden: () => !data.error }, t.span({ textContent: () => data.error }), t.button({ type: "button", className: "btn sm secondary m-l-10", onclick: () => (sync ? sync.refresh() : startSync()) }, "Retry")),
     t.table(
       { pbEvent: "recordsListTable", className: () => "records-table responsive-table" + (data.ids.length > pageSize ? " optimize" : "") },
       t.thead(

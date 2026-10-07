@@ -35,7 +35,6 @@ function managedCrons(list, header, nativeRefresh) {
     loading: false,
     busy: "",
     search: "",
-    error: "",
     actionError: "",
     startupError: "",
     limits: { maxJobs: 50, maxCodeBytes: 32768, historyLimit: 200 },
@@ -62,20 +61,6 @@ function managedCrons(list, header, nativeRefresh) {
     }
   }
 
-  function errorMessage(error, mutation = false) {
-    if (!error?.status && mutation) return "The request result is unknown. Check the jobs and execution history before trying again.";
-    if (error?.status === 409) return error?.response?.message || "This job changed in another session. Reload its latest version before making changes.";
-    if (error?.status === 423) return "Cron Manager is busy. Please try again shortly.";
-    if (error?.status === 404) return "This job no longer exists. Refresh the list to continue.";
-    return error?.response?.message || "Unable to complete the request.";
-  }
-
-  function report(error, message) {
-    if (error?.isAbort || !current()) return;
-    if (error?.status) app.checkApiError(error, false);
-    if (current()) app.toasts.error(message);
-  }
-
   async function refresh(notify = false) {
     if (!current() || document.hidden || data.loading) return;
     const version = epoch;
@@ -88,13 +73,11 @@ function managedCrons(list, header, nativeRefresh) {
       if (JSON.stringify(result.jobs) !== JSON.stringify(data.jobs)) data.jobs = result.jobs;
       data.limits = result.limits;
       data.startupError = result.startupError || "";
-      data.error = "";
       data.ready = true;
       if (registrationsChanged) nativeRefresh.click();
     } catch (error) {
-      if (!current() || version !== epoch || error?.isAbort || (!notify && error?.status === 423)) return;
-      data.error = errorMessage(error);
-      if (notify || error?.status === 401) report(error, "Unable to refresh managed jobs.");
+      if (!current() || version !== epoch || error?.isAbort) return;
+      app.checkApiError(error, notify);
     } finally {
       data.loading = false;
       if (current() && version !== epoch) refresh();
@@ -133,14 +116,15 @@ function managedCrons(list, header, nativeRefresh) {
       data.actionError = "";
       if (action === "run") {
         if (result.run.status === "success") app.toasts.success("Cron completed successfully.");
+        else if (result.run.status === "error") app.toasts.error("Cron execution failed. Check execution history for details.");
         else app.toasts.info("Check execution history for this cron's result.");
       } else {
         app.toasts.success(action === "delete" ? "Cron deleted." : job.enabled ? "Cron paused." : "Cron resumed.");
       }
     } catch (error) {
       if (!current() || error?.isAbort) return;
-      data.actionError = errorMessage(error, true);
-      report(error, "The cron action could not be confirmed.");
+      data.actionError = !error?.status ? "The request result is unknown. Check the jobs and execution history before trying again." : "";
+      app.checkApiError(error);
       return false;
     } finally {
       ++epoch;
@@ -191,7 +175,7 @@ function managedCrons(list, header, nativeRefresh) {
       original: draft?.original || JSON.stringify(defaults),
       loading: !!jobId && !draft,
       saving: false,
-      error: "",
+      conflictMessage: "",
       conflict: false,
       uncertain: !!draft?.uncertain,
       running: false,
@@ -241,7 +225,7 @@ function managedCrons(list, header, nativeRefresh) {
       form.original = JSON.stringify(form.values);
       form.conflict = false;
       form.uncertain = false;
-      form.error = "";
+      form.conflictMessage = "";
       remember();
     }
     function synchronizeJobState() {
@@ -251,7 +235,7 @@ function managedCrons(list, header, nativeRefresh) {
       form.registrationError = job?.registrationError || "";
       if (!job || job.revision !== form.revision) {
         form.conflict = true;
-        form.error = job ? "This job changed in another session. Your editor content has been preserved. Copy it before reloading to merge changes." : "This job no longer exists. Your editor content has been preserved.";
+        form.conflictMessage = job ? "This job changed in another session. Your editor content has been preserved. Copy it before reloading to merge changes." : "This job no longer exists. Your editor content has been preserved.";
       }
     }
     async function load() {
@@ -263,9 +247,9 @@ function managedCrons(list, header, nativeRefresh) {
         if (valid()) accept(job);
       } catch (error) {
         if (valid() && !error?.isAbort) {
-          form.error = errorMessage(error);
           form.conflict = true;
-          report(error, "Unable to open this cron.");
+          form.conflictMessage = error?.status === 404 ? "This job no longer exists. Your editor content has been preserved." : "";
+          app.checkApiError(error);
         }
       } finally {
         form.loading = false;
@@ -276,7 +260,7 @@ function managedCrons(list, header, nativeRefresh) {
     function resetForm() {
       if (!valid() || form.loading || form.saving || form.uncertain || form.running || data.busy) return;
       form.values = JSON.parse(form.original);
-      if (!form.conflict) form.error = "";
+      if (!form.conflict) form.conflictMessage = "";
       remember();
     }
     async function save(close = true) {
@@ -305,9 +289,9 @@ function managedCrons(list, header, nativeRefresh) {
         if (!valid() || error?.isAbort) return;
         form.uncertain = !error?.status;
         form.conflict = error?.status === 404;
-        form.error = errorMessage(error, true);
+        form.conflictMessage = form.conflict ? "This job no longer exists. Your editor content has been preserved." : "";
         remember();
-        report(error, "The cron could not be saved.");
+        app.checkApiError(error);
       } finally {
         ++epoch;
         form.saving = false;
@@ -393,7 +377,7 @@ function managedCrons(list, header, nativeRefresh) {
           },
         },
         t.div({ className: "txt-center", hidden: () => !form.loading }, t.span({ className: "loader" })),
-        t.div({ className: "alert danger m-b-sm", hidden: () => !form.error }, () => form.error),
+        t.div({ className: "alert warning m-b-sm", hidden: () => !form.conflictMessage }, () => form.conflictMessage),
         t.div({ className: "alert warning m-b-sm", hidden: () => !form.registrationError }, () => form.registrationError),
         t.div({ className: "alert warning m-b-sm", hidden: () => !form.uncertain || form.saving }, "Saving is paused because the previous request was not acknowledged. Close this editor and inspect the jobs list before creating or saving another job."),
         t.div({ className: "alert warning m-b-sm", hidden: () => !form.running }, "This cron is running. Editing will become available when execution finishes."),
@@ -493,7 +477,7 @@ function managedCrons(list, header, nativeRefresh) {
   function openHistory(job = null) {
     if (!current()) return;
     const uid = prefix + "_history_" + app.utils.randomString();
-    const history = store({ items: [], loading: false, ready: false, error: "", limit: data.limits.historyLimit });
+    const history = store({ items: [], loading: false, ready: false, limit: data.limits.historyLimit });
     const openRuns = new Set();
     let mounted = true;
     let timer;
@@ -508,11 +492,9 @@ function managedCrons(list, header, nativeRefresh) {
         if (JSON.stringify(result.items) !== JSON.stringify(history.items)) history.items = result.items;
         history.limit = result.limit;
         history.ready = true;
-        history.error = "";
       } catch (error) {
-        if (!current() || !mounted || !modal.isConnected || error?.isAbort || (!notify && error?.status === 423)) return;
-        history.error = errorMessage(error);
-        if (notify || error?.status === 401) report(error, "Unable to refresh execution history.");
+        if (!current() || !mounted || !modal.isConnected || error?.isAbort) return;
+        app.checkApiError(error, notify);
       } finally {
         history.loading = false;
       }
@@ -525,7 +507,7 @@ function managedCrons(list, header, nativeRefresh) {
       {
         className: "modal record-upsert-modal",
         onbeforeopen: () => {
-          load();
+          load(true);
           timer = setInterval(load, 5000);
           document.addEventListener("visibilitychange", visible);
         },
@@ -545,7 +527,6 @@ function managedCrons(list, header, nativeRefresh) {
           t.p({ className: "txt-sm txt-hint" }, job ? job.name : "All managed jobs, including deleted jobs."),
           t.p({ className: "txt-sm txt-hint" }, () => "Up to " + history.limit + " recent executions are retained globally. Times are displayed in your local timezone."),
         ),
-        t.div({ className: "alert danger m-b-sm", hidden: () => !history.error }, () => history.error),
         t.div({ className: "txt-center", hidden: () => history.ready || !history.loading }, t.span({ className: "loader" })),
         t.div({ className: "list", hidden: () => !history.ready || !!history.items.length }, t.div({ className: "list-item" }, t.div({ className: "content txt-hint" }, "No executions found."))),
         t.div({ className: "block" }, () =>
@@ -823,7 +804,7 @@ function managedCrons(list, header, nativeRefresh) {
             syncList();
         });
         listWatcher = watch(() => [data.jobs, data.search, data.ready], syncList);
-        refresh();
+        refresh(true);
         interval = setInterval(refresh, 5000);
         document.addEventListener("visibilitychange", visible);
         unsubscribe = app.pb.authStore.onChange((_, record) => {
@@ -858,7 +839,6 @@ function managedCrons(list, header, nativeRefresh) {
       t.p({ className: "txt-bold" }, "Some managed jobs could not be registered"),
       t.p(null, () => data.startupError),
     ),
-    t.div({ className: "alert warning m-b-sm", hidden: () => !data.error }, () => data.error),
     t.div(
       { className: "alert warning m-b-sm", hidden: () => !data.actionError },
       t.p(null, () => data.actionError),

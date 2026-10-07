@@ -51,7 +51,7 @@ The existing refresh button reconciles the loaded range and its contents without
 
 The plugin's record state also supplies the visible total count. It replaces only the native count node in the page footer. Credits remain native, including notices added by Update Notifier. The page's original count calculation may still make occasional requests when the collection, filter, or manual refresh changes.
 
-The count displays a connection indicator: **Connecting**, **Syncing**, **Live**, **Offline**, **Sync error**, or **Auto**. A synchronization error retains the last loaded data and offers **Retry**. A displayed count or field value may be stale while the connection is offline or an error remains unresolved.
+The count displays a connection indicator: **Connecting**, **Syncing**, **Live**, **Offline**, **Sync error**, or **Auto**. A synchronization error retains the last loaded data. A displayed count or field value may be stale while the connection is offline or an error remains unresolved.
 
 Base and auth collections use realtime events. PocketBase view collections do not emit record realtime events, so views and lists with view dependencies reconcile every **10 seconds** while the tab is visible; their indicator shows **Auto**. Related collection subscriptions follow the relation schema through at most six levels. Filters containing `@collection.` subscribe to the available collections to detect cross-collection changes. These queries and subscriptions add work to the current instance, especially for large loaded ranges or broad cross-collection filters.
 

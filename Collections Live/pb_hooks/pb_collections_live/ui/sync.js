@@ -78,7 +78,7 @@ export function createSync({ getQuery, getRecords, applySnapshot, setStatus, onE
   let queue = emptyQueue();
 
   function emptyQueue() {
-    return { full: false, structural: false, ids: new Set(), waiters: [] };
+    return { full: false, structural: false, notify: false, ids: new Set(), waiters: [] };
   }
 
   function readQuery() {
@@ -103,10 +103,10 @@ export function createSync({ getQuery, getRecords, applySnapshot, setStatus, onE
     if (alive) setStatus?.(value);
   }
 
-  function report(error) {
+  function report(error, notify = true) {
     if (!alive || error?.isAbort) return;
     status(typeof navigator !== "undefined" && navigator.onLine === false ? "offline" : "error");
-    onError?.(error);
+    onError?.(error, notify);
   }
 
   function cancelRequests() {
@@ -181,10 +181,11 @@ export function createSync({ getQuery, getRecords, applySnapshot, setStatus, onE
     }, delay);
   }
 
-  function enqueue({ full = false, structural = false, ids = [] } = {}, immediate = false) {
+  function enqueue({ full = false, structural = false, ids = [], notify = false } = {}, immediate = false) {
     if (!alive || !started || !readQuery()) return Promise.resolve(false);
     queue.full ||= full;
     queue.structural ||= structural || full;
+    queue.notify ||= notify;
     for (const id of ids) queue.ids.add(id);
     const promise = new Promise((resolve) => queue.waiters.push(resolve));
     schedule(immediate ? 0 : eventDelay);
@@ -237,7 +238,7 @@ export function createSync({ getQuery, getRecords, applySnapshot, setStatus, onE
       applied = true;
       status(failedSources ? "error" : query.type === "view" || viewDependencies ? "polling" : app.pb.realtime.isConnected === false ? "offline" : "live");
     } catch (error) {
-      if (current(version, key)) report(error);
+      if (current(version, key)) report(error, job.notify);
     } finally {
       running = false;
       for (const resolve of job.waiters) resolve(applied);
@@ -305,7 +306,7 @@ export function createSync({ getQuery, getRecords, applySnapshot, setStatus, onE
           if (source.unsubscribe) await source.unsubscribe();
           else await app.pb.realtime.unsubscribe(source.topic);
         } catch (error) {
-          if (alive && !error?.isAbort) onError?.(error);
+          if (alive && !error?.isAbort) onError?.(error, false);
         }
       }),
     );
@@ -384,7 +385,7 @@ export function createSync({ getQuery, getRecords, applySnapshot, setStatus, onE
     status(query.type === "view" ? "polling" : "connecting");
     await openSources(query, version, queryKey(query, false));
     if (!current(version, key)) return false;
-    return enqueue({ full: true }, true);
+    return enqueue({ full: true, notify: true }, true);
   }
 
   async function start() {
@@ -407,11 +408,11 @@ export function createSync({ getQuery, getRecords, applySnapshot, setStatus, onE
 
   function refresh() {
     if (failedSources) return queryChanged();
-    return enqueue({ full: true }, true);
+    return enqueue({ full: true, notify: true }, true);
   }
 
   function loadMore() {
-    return enqueue({ structural: true }, true);
+    return enqueue({ structural: true, notify: true }, true);
   }
 
   async function dispose() {

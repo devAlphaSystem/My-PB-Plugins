@@ -59,8 +59,8 @@ function pageHooks(route) {
     busy: false,
     importing: false,
     dragging: false,
-    listError: "",
     error: "",
+    recoveryError: "",
     path: draft?.path || "",
     directory: draft?.directory || "",
     name: draft?.name || "",
@@ -162,14 +162,17 @@ function pageHooks(route) {
     data.pending = file.pending;
     data.diskChanged = file.diskChanged;
     data.error = "";
+    data.recoveryError = "";
     rememberDraft();
   }
 
-  function showError(err, field = "error", notify = true) {
+  function showError(err, notify = true, blockEditor = true) {
     if (err?.isAbort || !alive) {
       return;
     }
-    data[field] = err?.response?.message || err?.message || "Failed to read hook files.";
+    if (blockEditor) {
+      data.error = err?.response?.message || err?.message || "Failed to read hook files.";
+    }
     app.checkApiError(err, notify);
   }
 
@@ -205,7 +208,7 @@ function pageHooks(route) {
       data.maxDrafts = result.maxDrafts;
       data.maxDraftBytes = result.maxDraftBytes;
       data.ready = true;
-      data.listError = "";
+      if (notify) data.recoveryError = "";
 
       if (settings) return;
       if (data.currentDisabled) {
@@ -219,7 +222,7 @@ function pageHooks(route) {
       }
       if (data.currentHidden && !data.dirty && !data.conflict) clearEditor();
       if (!data.hasFile) {
-        if (data.error && !notify) return;
+        if ((data.error || data.recoveryError) && !notify) return;
         if (data.visibleFiles.length) {
           await loadFile(data.visibleFiles[0].path);
         } else if (!data.files.length && !data.disabledFiles.length) {
@@ -257,18 +260,18 @@ function pageHooks(route) {
             data.missing = true;
             rememberDraft();
           } else if (notify || ![409, 423].includes(err?.status)) {
-            showError(err, "listError", notify);
+            showError(err, notify, false);
           }
         }
       }
     } catch (err) {
       if (isCurrent(token) && (notify || ![409, 423].includes(err?.status))) {
-        showError(err, "listError", notify);
+        showError(err, notify, false);
       }
     } finally {
       if (alive) {
         data.refreshing = false;
-        if (token !== generation && !data.hasFile && !data.isBusy && !data.error) refresh();
+        if (token !== generation && !data.hasFile && !data.isBusy && !data.error && !data.recoveryError) refresh();
       }
     }
   }
@@ -318,9 +321,9 @@ function pageHooks(route) {
         if (operation && Date.now() >= operation.deadline) {
           data.waiting = false;
           operation = null;
-          data.error = "The operation could not be confirmed. Check the server, then refresh to review saved drafts and apply progress.";
+          data.recoveryError = "The operation could not be confirmed. Check the server, then refresh to review saved drafts and apply progress.";
         }
-        if (!operation && !data.hasFile && !data.error) refresh();
+        if (!operation && !data.hasFile && !data.error && !data.recoveryError) refresh();
       }
     }
   }
@@ -351,7 +354,7 @@ function pageHooks(route) {
         cancelReads();
         data.waiting = true;
         data.error = "";
-        data.listError = "";
+        data.recoveryError = "";
         operation = { id: app.utils.randomString(32), deadline: Date.now() + 60000 };
         try {
           const result = await app.pb.send(hooksApi + "/apply", {
@@ -397,6 +400,7 @@ function pageHooks(route) {
     cancelReads();
     data.loading = true;
     data.error = "";
+    data.recoveryError = "";
     try {
       const file = await app.pb.send(hooksApi + "/file", {
         method: "GET",
@@ -434,8 +438,9 @@ function pageHooks(route) {
     data.pending = "";
     data.diskChanged = false;
     data.error = "";
+    data.recoveryError = "";
     rememberDraft();
-    if (refreshFiles) refresh();
+    if (refreshFiles) refresh(true);
   }
 
   function newFile() {
@@ -499,21 +504,17 @@ function pageHooks(route) {
     cancelReads();
     resetFileDrag();
     data.importing = true;
-    const form = store({ folder: "", rows: [], bytes: 0, revision: "", loading: false, saving: false, reviewed: false, error: "" });
+    const form = store({ folder: "", rows: [], bytes: 0, revision: "", loading: false, saving: false, reviewed: false, recoveryError: "" });
     let selectedFiles = [];
     let modal;
     function valid() {
       return isCurrent(token) && importModal === modal && modal.isConnected;
     }
-    function report(err) {
-      form.error = err?.response?.message || err?.message || "The folder could not be imported.";
-      app.checkApiError(err);
-    }
     async function review() {
       if (!valid() || form.loading || form.saving || !selectedFiles.length) return;
       form.loading = true;
       form.reviewed = false;
-      form.error = "";
+      form.recoveryError = "";
       try {
         const result = await app.pb.send(hooksApi + "/import", { method: "POST", body: { files: selectedFiles }, requestKey: requestKeys.import });
         if (!valid()) return;
@@ -521,7 +522,7 @@ function pageHooks(route) {
         form.revision = result.revision;
         form.reviewed = true;
       } catch (err) {
-        if (valid() && !err?.isAbort) report(err);
+        if (valid() && !err?.isAbort) app.checkApiError(err);
       } finally {
         if (valid()) form.loading = false;
       }
@@ -533,7 +534,7 @@ function pageHooks(route) {
       form.loading = true;
       form.reviewed = false;
       form.rows = [];
-      form.error = "";
+      form.recoveryError = "";
       form.folder = "";
       form.bytes = 0;
       selectedFiles = [];
@@ -554,7 +555,7 @@ function pageHooks(route) {
         form.folder = folder;
         form.bytes = size;
       } catch (err) {
-        if (valid()) report(err);
+        if (valid()) app.toasts.error(err?.message || "The folder could not be read.");
       } finally {
         if (valid()) form.loading = false;
       }
@@ -563,7 +564,7 @@ function pageHooks(route) {
     async function save() {
       if (!valid() || form.loading || form.saving || !form.reviewed || !form.rows.some((file) => file.operation !== "unchanged")) return;
       form.saving = true;
-      form.error = "";
+      form.recoveryError = "";
       const revisions = new Map(form.rows.map((file) => [file.path, file.revision]));
       try {
         const result = await app.pb.send(hooksApi + "/import", {
@@ -579,8 +580,8 @@ function pageHooks(route) {
       } catch (err) {
         if (valid()) {
           form.reviewed = false;
-          if (!err?.status || err?.isAbort) form.error = "Saving could not be confirmed. Review the folder again to check the saved drafts before retrying.";
-          else report(err);
+          if (!err?.status || err?.isAbort) form.recoveryError = "Saving could not be confirmed. Review the folder again to check the saved drafts before retrying.";
+          else app.checkApiError(err);
         }
       } finally {
         if (valid()) form.saving = false;
@@ -642,9 +643,18 @@ function pageHooks(route) {
             t.div({ className: "field-help" }, "Select pb_hooks or another hooks folder. Its contents are merged into pb_hooks, preserving subfolders."),
             t.div({ className: "field-help" }, () => "UTF-8 text · Maximum " + app.utils.formattedFileSize(data.maxFileSize) + " per file · " + data.maxDrafts + " files / " + app.utils.formattedFileSize(data.maxDraftBytes) + " of saved drafts."),
             t.div({ className: "field-help" }, "Supported files: .js, .ts, .mjs, .cjs, .json, .txt, .md, .html and .css."),
-            t.div({ className: "field-help error", hidden: () => !form.error }, () => form.error),
           ),
           t.div({ className: "col-12 txt-center", hidden: () => !form.loading, role: "status", ariaLabel: "Reading and reviewing folder" }, t.span({ className: "loader" })),
+          t.div(
+            { className: "col-12", hidden: () => !form.recoveryError },
+            t.div(
+              { className: "alert warning" },
+              t.div(
+                { className: "content" },
+                t.p(null, () => form.recoveryError),
+              ),
+            ),
+          ),
           t.div(
             { className: "col-12", hidden: () => !form.reviewed },
             t.p({ className: "txt-hint txt-bold" }, "Detected changes"),
@@ -675,6 +685,7 @@ function pageHooks(route) {
     cancelReads();
     data.loading = true;
     data.error = "";
+    data.recoveryError = "";
     try {
       if (files.length !== 1 || !/\.js$/i.test(files[0].name)) {
         throw new Error("Drop a single .js file.");
@@ -691,7 +702,7 @@ function pageHooks(route) {
       rememberDraft();
     } catch (err) {
       if (isCurrent(token)) {
-        showError(err);
+        app.toasts.error(err?.message || "Failed to load the imported file.");
       }
     } finally {
       if (isCurrent(token)) {
@@ -708,14 +719,14 @@ function pageHooks(route) {
       return;
     }
     if (new TextEncoder().encode(data.content).length > data.maxFileSize) {
-      data.error = "The file exceeds the " + app.utils.formattedFileSize(data.maxFileSize) + " limit.";
-      app.toasts.error(data.error);
+      app.toasts.error("The file exceeds the " + app.utils.formattedFileSize(data.maxFileSize) + " limit.");
       return;
     }
     const token = ++generation;
     cancelReads();
     data.busy = true;
     data.error = "";
+    data.recoveryError = "";
     try {
       const file = await app.pb.send(hooksApi + "/file", {
         method: data.isNew ? "POST" : "PUT",
@@ -844,6 +855,7 @@ function pageHooks(route) {
     cancelReads();
     data.busy = true;
     data.error = "";
+    data.recoveryError = "";
     try {
       if (activation && !value) {
         const file = await app.pb.send(hooksApi + "/file", {
@@ -876,8 +888,7 @@ function pageHooks(route) {
     } catch (err) {
       if (isCurrent(token)) {
         if (activation && !err?.status) {
-          data.error = "The action could not be confirmed. PocketBase may be restarting. Refresh the lists before trying again.";
-          app.toasts.error(data.error);
+          data.recoveryError = "The action could not be confirmed. PocketBase may be restarting. Refresh the lists before trying again.";
         } else {
           showError(err);
         }
@@ -918,7 +929,7 @@ function pageHooks(route) {
     pbEvent: settings ? "pageHooksSettings" : "pageHooksManager",
     className: "page",
     onmount: () => {
-      refresh();
+      refresh(true);
       intervalId = setInterval(() => refresh(), 3000);
       document.addEventListener("visibilitychange", onVisibilityChange);
       if (!settings) {
@@ -989,8 +1000,7 @@ function pageHooks(route) {
               onclick: () => refresh(true),
             }),
           ),
-          t.div({ className: "alert danger m-b-sm", hidden: () => !data.listError }, () => data.listError),
-          t.div({ className: "alert danger m-b-sm", hidden: () => !data.error }, () => data.error),
+          t.div({ className: "alert warning m-b-sm", hidden: () => !data.recoveryError }, () => data.recoveryError),
           t.div({ className: "alert info m-b-sm", hidden: () => !data.restartRequired }, "Hook files changed. If PocketBase has not restarted automatically, restart the instance externally to load the changes."),
           t.div(
             { className: "list" },
@@ -1200,12 +1210,8 @@ function pageHooks(route) {
       ),
       t.div({ className: "alert info m-b-sm", hidden: () => !data.restartRequired }, t.p({ className: "txt-bold" }, "Hook files changed"), t.p(null, "If PocketBase has not restarted automatically, restart the instance externally to load the changes.")),
       t.div(
-        { className: "alert danger m-b-sm", hidden: () => !data.listError },
-        t.p(null, () => data.listError),
-      ),
-      t.div(
-        { className: "alert danger m-b-sm", hidden: () => !data.error },
-        t.p(null, () => data.error),
+        { className: "alert warning m-b-sm", hidden: () => !data.recoveryError },
+        t.p(null, () => data.recoveryError),
       ),
       t.div(
         { className: "alert warning m-b-sm", hidden: () => !data.conflict },
